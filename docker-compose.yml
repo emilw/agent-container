@@ -6,5 +6,5 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./claude-config:/home/node/.claude   # login + settings + session history
-      - /volume1/code:/workspace             # change to your repos folder on the NAS
+      - ./config:/config          # agent.env (Telegram etc.) + claude/ (login, settings, history)
+      - /volume1/code:/workspace  # change to your repos folder on the NAS
