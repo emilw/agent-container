@@ -1,0 +1,10 @@
+services:
+  claude:
+    image: ghcr.io/emilw/agent-container:latest
+    container_name: claude
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./claude-config:/home/node/.claude   # login + settings + session history
+      - /volume1/code:/workspace             # change to your repos folder on the NAS
