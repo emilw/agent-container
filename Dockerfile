@@ -12,13 +12,14 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 ENV DISABLE_AUTOUPDATER=1 \
     CLAUDE_CONFIG_DIR=/config/claude
 
-COPY --chmod=755 entrypoint.sh /opt/agent/entrypoint.sh
-COPY --chmod=644 agent.env.example /opt/agent/agent.env.example
+COPY --chmod=755 agent.mjs tmux.conf agent.env.example /opt/agent/
+
+# Instructions for every Claude session in the container (managed CLAUDE.md location on Linux)
+COPY --chmod=755 AGENTS.MD /etc/claude-code/CLAUDE.md
 
 RUN mkdir -p /config /workspace && chown node:node /config /workspace
 
 USER node
 WORKDIR /workspace
 
-# -g: forward stop signals to the whole process group, not just the script
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/opt/agent/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agent/agent.mjs"]
