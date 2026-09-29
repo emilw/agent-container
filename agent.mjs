@@ -2,13 +2,16 @@
 // - runs `claude auth login` in tmux and relays the link and code over Telegram,
 //   both for the first login and whenever the login expires or stops working
 // - runs `claude remote-control` in tmux, forwarding its y/n prompts and session link
+// - serves a tools API on localhost for programs in /workspace (Telegram notify, config values)
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const CONFIG_DIR = "/config";
 const ENV_FILE = `${CONFIG_DIR}/agent.env`;
+const TOOLS_FILE = `${CONFIG_DIR}/tools.env`;
 const TMUX_CONF = "/opt/agent/tmux.conf";
 const LOGIN_REPLY_MINUTES = 30;
 const HOUR = 3600_000;
@@ -30,16 +33,26 @@ if (!existsSync(ENV_FILE)) {
   copyFileSync("/opt/agent/agent.env.example", ENV_FILE);
   log(`Created ${ENV_FILE}. Fill in TELEGRAM_TOKEN and ALLOWED_USER_IDS, then restart the container.`);
 }
+if (!existsSync(TOOLS_FILE)) {
+  copyFileSync("/opt/agent/tools.env.example", TOOLS_FILE);
+  log(`Created ${TOOLS_FILE} for values the tools service hands out.`);
+}
 
 // Parse KEY=value lines instead of sourcing, so the file can't run commands.
-readFileSync(ENV_FILE, "utf8").split(/\r?\n/).forEach((raw, i) => {
-  const line = raw.trim();
-  if (!line || line.startsWith("#")) return;
-  const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-  if (!m) return log(`Ignoring malformed line ${i + 1} in agent.env`);
-  const quoted = m[2].trim().match(/^"(.*)"$|^'(.*)'$/);
-  process.env[m[1]] = quoted ? (quoted[1] ?? quoted[2]) : m[2].trim();
-});
+function parseEnvFile(path) {
+  const values = {};
+  readFileSync(path, "utf8").split(/\r?\n/).forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) return;
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$/);
+    if (!m) return log(`Ignoring malformed line ${i + 1} in ${path}`);
+    const quoted = m[2].trim().match(/^"(.*)"$|^'(.*)'$/);
+    values[m[1]] = quoted ? (quoted[1] ?? quoted[2]) : m[2].trim();
+  });
+  return values;
+}
+
+Object.assign(process.env, parseEnvFile(ENV_FILE));
 
 const cfg = {
   token: process.env.TELEGRAM_TOKEN || "",
@@ -50,6 +63,7 @@ const cfg = {
   checkMs: (Number(process.env.CHECK_INTERVAL_MINUTES) || 30) * 60_000,
   healthPingMs: (Number(process.env.HEALTH_PING_HOURS ?? 6) || 0) * HOUR,
   container: process.env.CONTAINER_NAME || "claude",
+  toolsPort: Number(process.env.TOOLS_PORT) || 7777,
 };
 
 // Remote Control only works with the claude.ai login; these would take precedence over it.
@@ -61,6 +75,7 @@ for (const v of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH
 }
 // Keep the bot token out of the environment Claude's sessions inherit.
 delete process.env.TELEGRAM_TOKEN;
+process.env.AGENT_TOOLS_URL = `http://127.0.0.1:${cfg.toolsPort}`;
 
 const telegram = Boolean(cfg.token && cfg.users.length);
 
@@ -445,6 +460,84 @@ async function watchdog() {
   }
 }
 
+// ---------- tools API ----------
+// Localhost only: for programs running in the container. See AGENTS.MD for usage.
+
+const NOTIFY_LIMIT_PER_MINUTE = 20;
+let notifyTimes = [];
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 64 * 1024) reject(Object.assign(new Error("Body too large"), { status: 413 }));
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
+async function toolsNotify(body) {
+  let input;
+  try { input = JSON.parse(body || "{}"); } catch { input = null; }
+  const text = typeof input?.text === "string" ? input.text.trim() : "";
+  if (!text) return [400, { ok: false, error: 'Send JSON like {"text": "..."}' }];
+  if (!telegram) return [503, { ok: false, error: "Telegram is not configured in agent.env" }];
+
+  const now = Date.now();
+  notifyTimes = notifyTimes.filter((t) => now - t < 60_000);
+  if (notifyTimes.length >= NOTIFY_LIMIT_PER_MINUTE) {
+    return [429, { ok: false, error: `More than ${NOTIFY_LIMIT_PER_MINUTE} notifications a minute` }];
+  }
+  notifyTimes.push(now);
+
+  const title = typeof input.title === "string" && input.title.trim() ? `${input.title.trim()}\n` : "";
+  const message = `[${cfg.name}] ${title}${text}`.slice(0, 4096);
+  let sent = 0;
+  for (const id of cfg.users) {
+    try {
+      await send(id, message);
+      sent++;
+    } catch (e) {
+      log(`Tools notify to ${id} failed: ${e.message}`);
+    }
+  }
+  return sent ? [200, { ok: true, sent }] : [502, { ok: false, error: "Telegram did not accept the message" }];
+}
+
+function toolsConfig(key) {
+  const values = existsSync(TOOLS_FILE) ? parseEnvFile(TOOLS_FILE) : {};
+  if (!key) return [200, { ok: true, keys: Object.keys(values) }];
+  return key in values
+    ? [200, { ok: true, key, value: values[key] }]
+    : [404, { ok: false, error: `No ${key} in tools.env` }];
+}
+
+async function handleTools(req) {
+  const url = new URL(req.url, "http://localhost");
+  if (req.method === "GET" && url.pathname === "/health") return [200, { ok: true, telegram }];
+  if (req.method === "POST" && url.pathname === "/notify") return toolsNotify(await readBody(req));
+  const m = url.pathname.match(/^\/config(?:\/([^/]+))?\/?$/);
+  if (req.method === "GET" && m) return toolsConfig(m[1] && decodeURIComponent(m[1]));
+  return [404, { ok: false, error: "Endpoints: GET /health, POST /notify, GET /config, GET /config/<KEY>" }];
+}
+
+function startToolsServer() {
+  const server = createServer(async (req, res) => {
+    let status, body;
+    try {
+      [status, body] = await handleTools(req);
+    } catch (e) {
+      [status, body] = [e.status || 500, { ok: false, error: e.message }];
+    }
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  });
+  server.on("error", (e) => log(`Tools API failed: ${e.message}`));
+  server.listen(cfg.toolsPort, "127.0.0.1", () => log(`Tools API on http://127.0.0.1:${cfg.toolsPort}`));
+}
+
 // ---------- main ----------
 
 for (const sig of ["SIGTERM", "SIGINT"]) {
@@ -454,6 +547,7 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
   });
 }
 
+startToolsServer();
 if (telegram) pollTelegram();
 else log("Telegram is not configured (TELEGRAM_TOKEN / ALLOWED_USER_IDS in agent.env); messages go to the container log only.");
 
