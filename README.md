@@ -1,63 +1,69 @@
 # agent-container
 
 Claude Code running as a Remote Control server, for a NAS. Sessions show up in
-claude.ai/code, the Claude mobile app and Claude Desktop.
+claude.ai/code, the Claude mobile app and Claude Desktop. Logging in, and renewing
+the login when it expires, happens over Telegram: no SSH needed.
 
 The image is built by GitHub Actions and published to
 `ghcr.io/emilw/agent-container` (amd64 + arm64) on every push to `main` and weekly.
 
-## Config folder
+## Folders
 
-Everything the container keeps lives in one folder on the NAS, mounted at `/config`:
+| Container path | Mount | Holds |
+| --- | --- | --- |
+| `/config` | an empty folder on the NAS | `agent.env` (your settings, created on first start from [agent.env.example](agent.env.example)) and `claude/` (the Claude login, settings and history) |
+| `/workspace` | your repos folder | the code Claude works on; its `AGENTS.md` holds the main instructions |
 
-| Path | What |
-| --- | --- |
-| `config/agent.env` | Your settings: Telegram token, user IDs, Remote Control flags. Created from [agent.env.example](agent.env.example) on first start. |
-| `config/claude/` | Claude login, settings and session history (`CLAUDE_CONFIG_DIR`). |
+The container runs as uid 1000, so both folders must be writable by it. `/config` is
+private: anyone with a copy of `config/claude/` can use your Claude account.
 
-Both are private. Keep them out of git and out of shared backups.
+## Setup
 
-## Telegram alerts
+1. Create a Telegram bot with @BotFather, just for this container, and send it `/start`.
+   Get your user ID from @userinfobot.
+2. On the NAS, copy `docker-compose.yml`, set the `/workspace` path, then:
+   ```bash
+   mkdir -p config && sudo chown -R 1000:1000 config
+   docker compose up -d
+   ```
+3. Fill in `TELEGRAM_TOKEN` and `ALLOWED_USER_IDS` in `config/agent.env`, then:
+   ```bash
+   docker compose restart
+   ```
+4. The bot sends you a login link. Open it on your phone, sign in with your claude.ai
+   account, and reply to the bot with the code the page shows.
+5. The first time, the bot forwards Remote Control's `Enable Remote Control? (y/n)`
+   question. Reply `y`. The bot then sends you the session link.
 
-With `TELEGRAM_TOKEN` and `ALLOWED_USER_IDS` set, the container messages you when:
+## Telegram
 
-- it starts and there is no Claude login (with the command to run)
-- the login disappears, or the daily health check fails (`HEALTH_PING=1`), which is how an expired login shows up
-- the Remote Control server exits or starts
+The bot sends a new login link, and restarts Remote Control on the new login once you
+reply with the code, when:
 
-Each user in `ALLOWED_USER_IDS` must send `/start` to the bot once before it can message them.
+- there is no login (Remote Control stays stopped until you log in)
+- Claude Code warns the login expires in a few days, or says it has expired
+  (Remote Control keeps running while it waits for you)
+- the health check fails with a login error (every `HEALTH_PING_HOURS`)
+- you send `/login`
 
-## First-time setup on the NAS
+Commands: `/status`, `/login`, `/restart`. Only users in `ALLOWED_USER_IDS` are
+listened to, and the bot deletes your code message after using it.
 
-Copy `docker-compose.yml` to the NAS and set the `/workspace` volume path. The
-container runs as uid 1000, so the mounted folders must be writable by it.
+Without Telegram configured, log in with `docker exec -it claude claude auth login`
+and watch `docker logs claude`.
+
+## Instructions for Claude
+
+[AGENTS.MD](AGENTS.MD) is installed as `/etc/claude-code/CLAUDE.md`, so every
+session in the container loads it. It points Claude at `/workspace/AGENTS.md`.
+
+## Troubleshooting
+
+See what Remote Control is showing (detach with `Ctrl+B` then `D`):
 
 ```bash
-mkdir -p config && sudo chown -R 1000:1000 config
-docker compose up -d
+docker exec -it claude tmux -f /opt/agent/tmux.conf attach -t rc
 ```
-
-The first start creates `config/agent.env`. Fill in the Telegram values, then:
-
-```bash
-docker compose restart
-```
-
-The container waits for a login (and tells you on Telegram). Log in:
-
-```bash
-docker exec -it claude claude auth login
-```
-
-Open the URL it prints, sign in with your claude.ai account, and paste the code
-shown in the browser back into the terminal. Within 30 seconds the container starts
-Remote Control. The first time only, accept its prompt:
-
-```bash
-docker attach claude
-```
-
-Answer `y`, then detach with `Ctrl+P` `Ctrl+Q` (not `Ctrl+C`, which stops the server).
 
 ## Updating
 
