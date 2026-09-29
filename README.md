@@ -32,8 +32,13 @@ private: anyone with a copy of `config/claude/` can use your Claude account.
    ```
 4. The bot sends you a login link. Open it on your phone, sign in with your claude.ai
    account, and reply to the bot with the code the page shows.
-5. The first time, the bot forwards Remote Control's `Enable Remote Control? (y/n)`
-   question. Reply `y`. The bot then sends you the session link.
+5. The first time, the bot asks you to trust `/workspace` (reply `yes`) and forwards
+   Remote Control's `Enable Remote Control? (y/n)` question (reply `y`).
+6. The bot sends you the session link. Open it, or find **nas** under **Code** in the
+   Claude app or at claude.ai/code.
+
+If no link arrives within 30 seconds, the bot sends you Remote Control's screen instead
+and types your reply into it.
 
 ## Telegram
 
@@ -46,8 +51,9 @@ reply with the code, when:
 - the health check fails with a login error (every `HEALTH_PING_HOURS`)
 - you send `/login`
 
-Commands: `/status`, `/login`, `/restart`. Only users in `ALLOWED_USER_IDS` are
-listened to, and the bot deletes your code message after using it.
+Commands: `/status`, `/screen` (what Remote Control is showing), `/login`, `/restart`.
+Only users in `ALLOWED_USER_IDS` are listened to, and the bot deletes your code message
+after using it.
 
 Without Telegram configured, log in with `docker exec -it claude claude auth login`
 and watch `docker logs claude`.
