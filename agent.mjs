@@ -11,7 +11,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const CONFIG_DIR = "/config";
 const ENV_FILE = `${CONFIG_DIR}/agent.env`;
-const TOOLS_FILE = `${CONFIG_DIR}/tools.env`;
+// agent.env is the one central config; the tools API serves all of it except these.
+const HIDDEN_CONFIG_KEYS = new Set(["TELEGRAM_TOKEN"]);
 const TMUX_CONF = "/opt/agent/tmux.conf";
 const LOGIN_REPLY_MINUTES = 30;
 const HOUR = 3600_000;
@@ -32,10 +33,6 @@ mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
 if (!existsSync(ENV_FILE)) {
   copyFileSync("/opt/agent/agent.env.example", ENV_FILE);
   log(`Created ${ENV_FILE}. Fill in TELEGRAM_TOKEN and ALLOWED_USER_IDS, then restart the container.`);
-}
-if (!existsSync(TOOLS_FILE)) {
-  copyFileSync("/opt/agent/tools.env.example", TOOLS_FILE);
-  log(`Created ${TOOLS_FILE} for values the tools service hands out.`);
 }
 
 // Parse KEY=value lines instead of sourcing, so the file can't run commands.
@@ -507,11 +504,14 @@ async function toolsNotify(body) {
 }
 
 function toolsConfig(key) {
-  const values = existsSync(TOOLS_FILE) ? parseEnvFile(TOOLS_FILE) : {};
+  // Read the file on every request, so edits apply without a restart.
+  const values = Object.fromEntries(
+    Object.entries(parseEnvFile(ENV_FILE)).filter(([k]) => !HIDDEN_CONFIG_KEYS.has(k)));
   if (!key) return [200, { ok: true, keys: Object.keys(values) }];
+  if (HIDDEN_CONFIG_KEYS.has(key)) return [403, { ok: false, error: `${key} is not available through the tools API` }];
   return key in values
     ? [200, { ok: true, key, value: values[key] }]
-    : [404, { ok: false, error: `No ${key} in tools.env` }];
+    : [404, { ok: false, error: `No ${key} in agent.env` }];
 }
 
 async function handleTools(req) {

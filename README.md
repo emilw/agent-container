@@ -11,7 +11,7 @@ The image is built by GitHub Actions and published to
 
 | Container path | Mount | Holds |
 | --- | --- | --- |
-| `/config` | an empty folder on the NAS | `agent.env` (your settings, created on first start from [agent.env.example](agent.env.example)), `tools.env` (values for your own programs, see below) and `claude/` (the Claude login, settings and history) |
+| `/config` | an empty folder on the NAS | `agent.env` (the central config: container settings and values for your own programs, created on first start from [agent.env.example](agent.env.example)) and `claude/` (the Claude login, settings and history) |
 | `/workspace` | your repos folder | the code Claude works on; its `AGENTS.md` holds the main instructions |
 
 The container runs as uid 1000, so both folders must be writable by it. `/config` is
@@ -64,10 +64,10 @@ Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777
 (`$AGENT_TOOLS_URL`), reachable only from inside the container:
 
 - `POST /notify` with `{"text": "...", "title": "..."}` sends you a Telegram message (max 20 a minute)
-- `GET /config/<KEY>` returns a value from `config/tools.env`; `GET /config` lists the keys
+- `GET /config/<KEY>` returns a value from `config/agent.env`; `GET /config` lists the keys
 
-`config/tools.env` is created on first start from [tools.env.example](tools.env.example).
-Edits apply immediately. Shell scripts can use `agent-tools notify "..."` and
+Every key in `agent.env` is served except `TELEGRAM_TOKEN`. Value changes apply
+immediately; the container's own settings still need a restart. Shell scripts can use `agent-tools notify "..."` and
 `agent-tools config KEY`. [AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
 
 ## Instructions for Claude

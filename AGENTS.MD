@@ -13,7 +13,7 @@ The container runs a tools API for programs you build in /workspace. Use it inst
 | Call | Does |
 | --- | --- |
 | `POST /notify` with `{"text": "...", "title": "optional"}` | Sends a Telegram message to the owner. Max 20 a minute. |
-| `GET /config/<KEY>` | Returns `{"value": "..."}` from the owner's `tools.env`. 404 if the key doesn't exist. |
+| `GET /config/<KEY>` | Returns `{"value": "..."}` from the owner's central config, `agent.env`. 404 if the key doesn't exist. |
 | `GET /config` | Lists the available keys (names only). |
 | `GET /health` | Checks the service is up, and whether Telegram is configured. |
 
@@ -38,5 +38,6 @@ API_URL=$(agent-tools config EXAMPLE_API_URL)
 
 Rules:
 - Read configuration values at runtime through this service. Never copy them into code or commit them.
-- If a program needs a value that doesn't exist yet, tell the owner the key name to add to `tools.env`. Don't invent a value.
+- If a program needs a value that doesn't exist yet, tell the owner the key name to add to `agent.env`. Don't invent a value.
+- The Telegram bot token is never available. Send messages through `/notify` instead.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
