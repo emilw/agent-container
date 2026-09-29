@@ -3,7 +3,7 @@
 //   both for the first login and whenever the login expires or stops working
 // - runs `claude remote-control` in tmux, forwarding its y/n prompts and session link
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -125,7 +125,7 @@ function waitReply(ms, { resolveWhenLoggedIn = false } = {}) {
   });
 }
 
-const HELP = "/status - login and server state\n/login - get a new login link\n/restart - restart the Remote Control server";
+const HELP = "/status - login and server state\n/screen - show what Remote Control is showing\n/login - get a new login link\n/restart - restart the Remote Control server";
 
 async function handleMessage(msg) {
   if (!msg?.text || !msg.from) return;
@@ -147,6 +147,10 @@ async function handleMessage(msg) {
     return send(msg.chat.id, "Restarting the Remote Control server.");
   }
   if (cmd === "/status") return send(msg.chat.id, await statusText());
+  if (cmd === "/screen") {
+    const screen = state.rcRunning ? lastLines(capture("rc"), 25) : "";
+    return send(msg.chat.id, screen || "Remote Control is not running.");
+  }
   if (cmd) return send(msg.chat.id, HELP);
 
   if (pendingReply) return pendingReply.resolve({ text, msg });
@@ -297,14 +301,55 @@ function startRenewal(reason) {
     .catch((e) => log(`Login flow failed: ${e.message}`));
 }
 
+// Remote Control only starts in a folder whose trust question was answered.
+// Claude Code records that answer per folder in .claude.json.
+const CLAUDE_JSON = `${process.env.CLAUDE_CONFIG_DIR}/.claude.json`;
+const WORKSPACE = "/workspace";
+
+function readClaudeJson() {
+  try { return JSON.parse(readFileSync(CLAUDE_JSON, "utf8")); } catch { return {}; }
+}
+
+const workspaceTrusted = () => readClaudeJson().projects?.[WORKSPACE]?.hasTrustDialogAccepted === true;
+
+function trustWorkspace() {
+  const config = readClaudeJson();
+  config.projects ??= {};
+  config.projects[WORKSPACE] = { ...config.projects[WORKSPACE], hasTrustDialogAccepted: true };
+  writeFileSync(`${CLAUDE_JSON}.tmp`, JSON.stringify(config, null, 2));
+  renameSync(`${CLAUDE_JSON}.tmp`, CLAUDE_JSON);
+}
+
+// Returns once /workspace is trusted.
+async function ensureWorkspaceTrusted() {
+  while (!workspaceTrusted()) {
+    if (!telegram) {
+      log(`Remote Control needs ${WORKSPACE} to be trusted. Run: docker exec -it ${cfg.container} claude  (then accept the trust question and exit)`);
+      await waitFor(workspaceTrusted, Infinity, 10_000);
+      return;
+    }
+    await notify(
+      `Remote Control needs you to trust ${WORKSPACE}, your mounted repos folder. ` +
+      "Claude sessions can then read and edit files and run commands there.\n\nReply yes to trust it.");
+    const answer = await waitReply(7 * 24 * HOUR);
+    if (answer?.text && /^y(es)?$/i.test(answer.text)) {
+      trustWorkspace();
+      await notify(`${WORKSPACE} is trusted. Starting Remote Control.`);
+      return;
+    }
+    if (answer?.text) await notify("Not trusted, so Remote Control can't start. I'll ask again.");
+  }
+}
+
 async function runRemoteControl() {
   state.rcRunning = true;
   state.rcUrl = null;
   tmuxStart("rc", ["claude", "remote-control", "--name", cfg.name, ...cfg.rcArgs]);
   log("Remote Control server starting.");
-  const started = Date.now();
+  let started = Date.now();
   let asked = false;
-  let announced = false;
+  let stuckReported = false;
+  let stuckReply = null;
   let expiryHandled = false;
 
   try {
@@ -324,13 +369,25 @@ async function runRemoteControl() {
         const url = history.match(/https:\/\/claude\.ai\/code\S*/)?.[0];
         if (url) {
           state.rcUrl = url;
-          announced = true;
-          await notify(`Remote Control is running:\n${url}`);
+          if (pendingReply && pendingReply === stuckReply) pendingReply.resolve(null);
+          await notify(`Remote Control is running. Open it here:\n${url}`);
         }
       }
-      if (!announced && !asked && Date.now() - started > 30_000) {
-        announced = true;
-        await notify("Remote Control server started. Find the session under Code in the Claude app.");
+
+      // No link after 30s means something on screen is waiting. Show it and relay the answer.
+      if (!state.rcUrl && !asked && !stuckReported && !state.loginActive && Date.now() - started > 30_000) {
+        stuckReported = true;
+        await notify(
+          `Remote Control hasn't shown a session link yet. Its screen:\n\n${lastLines(screen, 15)}\n\n` +
+          "Reply to type an answer into it (e.g. 1, y or enter), or send /screen to look again.");
+        waitReply(24 * HOUR).then((a) => {
+          if (!a?.text || !state.rcRunning || paneDead("rc")) return;
+          if (/^enter$/i.test(a.text)) tmux("send-keys", "-t", "rc", "Enter");
+          else typeInto("rc", a.text);
+          stuckReported = false; // report again if it still doesn't start
+          started = Date.now();
+        });
+        stuckReply = pendingReply;
       }
 
       // Claude Code warns a few days before the login expires, and says so once it has.
@@ -418,6 +475,7 @@ for (;;) {
       continue;
     }
   }
+  await ensureWorkspaceTrusted();
   await runRemoteControl();
   if (!state.rcRestart) await waitFor(() => state.rcRestart, 60_000);
   state.rcRestart = false;
