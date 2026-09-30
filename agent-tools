@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+// Command-line client for the container's tools API (see AGENTS.MD).
+//   agent-tools notify "Backup finished" [--title "Nightly job"]
+//   agent-tools config            list keys in agent.env
+//   agent-tools config KEY        print one value
+const base = process.env.AGENT_TOOLS_URL || "http://127.0.0.1:7777";
+const [cmd, ...args] = process.argv.slice(2);
+
+async function call(method, path, body) {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    console.error(`agent-tools: ${data.error}`);
+    process.exit(1);
+  }
+  return data;
+}
+
+try {
+  if (cmd === "notify" && args.length) {
+    const i = args.indexOf("--title");
+    const title = i >= 0 ? args.splice(i, 2)[1] : undefined;
+    await call("POST", "/notify", { text: args.join(" "), title });
+  } else if (cmd === "config" && args.length <= 1) {
+    const data = await call("GET", args[0] ? `/config/${encodeURIComponent(args[0])}` : "/config");
+    console.log(args[0] ? data.value : data.keys.join("\n"));
+  } else {
+    console.error('Usage: agent-tools notify "text" [--title "title"] | agent-tools config [KEY]');
+    process.exit(2);
+  }
+} catch (e) {
+  console.error(`agent-tools: can't reach the tools API at ${base} (${e.cause?.code ?? e.message})`);
+  process.exit(1);
+}
