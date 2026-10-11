@@ -58,6 +58,18 @@ after using it.
 Without Telegram configured, log in with `docker exec -it claude claude auth login`
 and watch `docker logs claude`.
 
+## GitHub
+
+The GitHub CLI (`gh`) is installed and `git` uses it for github.com credentials. Log in
+one of two ways:
+
+- Ask Claude in a session to log in to GitHub. It shows you a one-time code; approve it
+  at github.com/login/device. The login is saved in `config/gh`.
+- Or set `GH_TOKEN` in `agent.env` (a fine-grained token limited to specific repos) and restart.
+
+Set `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL`
+in `agent.env` for the name on Claude's commits.
+
 ## Tools API
 
 Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777`
@@ -66,7 +78,7 @@ Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777
 - `POST /notify` with `{"text": "...", "title": "..."}` sends you a Telegram message (max 20 a minute)
 - `GET /config/<KEY>` returns a value from `config/agent.env`; `GET /config` lists the keys
 
-Every key in `agent.env` is served except `TELEGRAM_TOKEN`. Value changes apply
+Every key in `agent.env` is served except `TELEGRAM_TOKEN` and `GH_TOKEN`. Value changes apply
 immediately; the container's own settings still need a restart. Shell scripts can use `agent-tools notify "..."` and
 `agent-tools config KEY`. [AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
 
