@@ -15,7 +15,10 @@ The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials
 - Never print or commit tokens.
 
 ## Tools service
-The container runs a tools API for programs you build in /workspace. Use it instead of adding your own Telegram code or hardcoding configuration values.
+The container runs a tools service with two front doors over the same functions:
+
+- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `get_config` and `list_config`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
+- **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
 - Base URL: `$AGENT_TOOLS_URL` (default `http://127.0.0.1:7777`). Only reachable from inside this container.
 - All responses are JSON with `ok: true` on success, or `ok: false` and an `error` message.

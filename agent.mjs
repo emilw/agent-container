@@ -2,7 +2,8 @@
 // - runs `claude auth login` in tmux and relays the link and code over Telegram,
 //   both for the first login and whenever the login expires or stops working
 // - runs `claude remote-control` in tmux, forwarding its y/n prompts and session link
-// - serves a tools API on localhost for programs in /workspace (Telegram notify, config values)
+// - serves a tools API on localhost for programs in /workspace (Telegram notify, config values),
+//   and the same tools as an MCP server for Claude sessions
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -514,8 +515,113 @@ function toolsConfig(key) {
     : [404, { ok: false, error: `No ${key} in agent.env` }];
 }
 
+// ---------- MCP ----------
+// The same tools for Claude sessions, as an MCP server (streamable HTTP, stateless JSON
+// responses) at /mcp. Registered at user scope, so every session in the container gets it.
+
+const MCP_NAME = "agent-tools";
+
+const MCP_INSTRUCTIONS = `Tools provided by the container this session runs in, on the owner's NAS.
+- notify: send the owner a Telegram message. Use it when the owner asked to be told about something (a result, a finished long task, a failure in something they rely on). Don't use it for progress updates or debugging, and don't send the same message twice.
+- get_config / list_config: read values from the owner's central config (agent.env). Use these for URLs, account names and other settings instead of asking the owner or hardcoding values. If a needed key is missing, tell the owner the exact key name to add; never invent a value. Bot and GitHub tokens are never returned.
+Programs you write in /workspace can't use these MCP tools: they call the same service over HTTP at $AGENT_TOOLS_URL (see the container instructions).`;
+
+const MCP_TOOLS = [
+  {
+    name: "notify",
+    description: "Send a Telegram message to the owner's phone. For results or events the owner asked to hear about, not progress or debugging. At most 20 a minute.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The message" },
+        title: { type: "string", description: "Optional first line, such as the program or task name" },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "get_config",
+    description: "Read one value from the owner's central config (agent.env). If the key doesn't exist, tell the owner which key to add instead of guessing a value.",
+    inputSchema: {
+      type: "object",
+      properties: { key: { type: "string", description: "Key name, e.g. EXAMPLE_API_URL" } },
+      required: ["key"],
+    },
+  },
+  {
+    name: "list_config",
+    description: "List the key names in the owner's central config (agent.env). Read values with get_config.",
+    inputSchema: { type: "object", properties: {} },
+  },
+];
+
+async function mcpCallTool(name, args = {}) {
+  let result;
+  if (name === "notify") result = await toolsNotify(JSON.stringify(args));
+  else if (name === "get_config") result = args.key ? toolsConfig(String(args.key)) : [400, { ok: false, error: "key is required" }];
+  else if (name === "list_config") result = toolsConfig();
+  else return null;
+
+  const [, body] = result;
+  const text = !body.ok ? body.error
+    : name === "notify" ? `Sent to ${body.sent} Telegram user(s).`
+    : name === "get_config" ? body.value
+    : body.keys.join("\n") || "(agent.env has no keys you can read)";
+  return { content: [{ type: "text", text }], isError: !body.ok };
+}
+
+async function handleMcp(raw) {
+  const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
+  let msg;
+  try { msg = JSON.parse(raw); } catch { return [400, rpcError(null, -32700, "Parse error")]; }
+  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return [400, rpcError(null, -32600, "Invalid request")];
+
+  const { id, method, params } = msg;
+  if (id === undefined || id === null) return [202, null]; // a notification, e.g. notifications/initialized
+  const result = (value) => [200, { jsonrpc: "2.0", id, result: value }];
+
+  switch (method) {
+    case "initialize":
+      return result({
+        protocolVersion: params?.protocolVersion ?? "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: MCP_NAME, version: "1.0.0" },
+        instructions: MCP_INSTRUCTIONS,
+      });
+    case "ping":
+      return result({});
+    case "tools/list":
+      return result({ tools: MCP_TOOLS });
+    case "tools/call": {
+      const called = await mcpCallTool(params?.name, params?.arguments);
+      return called ? result(called) : [200, rpcError(id, -32602, `Unknown tool: ${params?.name}`)];
+    }
+    default:
+      return [200, rpcError(id, -32601, `Method not found: ${method}`)];
+  }
+}
+
+// Add (or fix) the user-scope MCP entry so every Claude session in the container connects.
+async function registerMcpServer() {
+  const want = { type: "http", url: `http://127.0.0.1:${cfg.toolsPort}/mcp` };
+  const have = readClaudeJson().mcpServers?.[MCP_NAME];
+  if (have?.type === want.type && have?.url === want.url) return;
+  try {
+    if (have) await execFileAsync("claude", ["mcp", "remove", "--scope", "user", MCP_NAME], { timeout: 30_000 });
+    await execFileAsync("claude", ["mcp", "add-json", "--scope", "user", MCP_NAME, JSON.stringify(want)], { timeout: 30_000 });
+    log(`Registered the ${MCP_NAME} MCP server for Claude sessions.`);
+  } catch (e) {
+    log(`Could not register the ${MCP_NAME} MCP server: ${(e.stderr || e.message).trim()}`);
+  }
+}
+
 async function handleTools(req) {
   const url = new URL(req.url, "http://localhost");
+  if (url.pathname === "/mcp") {
+    return req.method === "POST"
+      ? handleMcp(await readBody(req))
+      : [405, { ok: false, error: "MCP clients POST JSON-RPC to /mcp" }];
+  }
   if (req.method === "GET" && url.pathname === "/health") return [200, { ok: true, telegram }];
   if (req.method === "POST" && url.pathname === "/notify") return toolsNotify(await readBody(req));
   const m = url.pathname.match(/^\/config(?:\/([^/]+))?\/?$/);
@@ -531,6 +637,7 @@ function startToolsServer() {
     } catch (e) {
       [status, body] = [e.status || 500, { ok: false, error: e.message }];
     }
+    if (body === null) return res.writeHead(status).end();
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   });
@@ -548,6 +655,7 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
 }
 
 startToolsServer();
+await registerMcpServer();
 if (telegram) pollTelegram();
 else log("Telegram is not configured (TELEGRAM_TOKEN / ALLOWED_USER_IDS in agent.env); messages go to the container log only.");
 

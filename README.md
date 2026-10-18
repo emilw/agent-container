@@ -82,6 +82,18 @@ Every key in `agent.env` is served except `TELEGRAM_TOKEN` and `GH_TOKEN`. Value
 immediately; the container's own settings still need a restart. Shell scripts can use `agent-tools notify "..."` and
 `agent-tools config KEY`. [AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
 
+### MCP for Claude sessions
+
+The same tools are an MCP server at `http://127.0.0.1:7777/mcp`, named `agent-tools`,
+with the tools `notify`, `get_config` and `list_config`. The container registers it in
+Claude's user config (`config/claude/.claude.json`) on every start, so all sessions get
+it and its usage instructions automatically, and you can still add your own MCP servers.
+Check it with:
+
+```bash
+docker exec claude claude mcp list
+```
+
 ## Instructions for Claude
 
 [AGENTS.MD](AGENTS.MD) is installed as `/etc/claude-code/CLAUDE.md`, so every
