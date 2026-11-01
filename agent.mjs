@@ -48,6 +48,7 @@ try {
 
 mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
 mkdirSync(LOG_DIR, { recursive: true });
+mkdirSync(`${CONFIG_DIR}/state`, { recursive: true }); // job states and usage totals
 if (!existsSync(ENV_FILE)) {
   copyFileSync("/opt/agent/agent.env.example", ENV_FILE);
   log(`Created ${ENV_FILE}. Fill in TELEGRAM_TOKEN and ALLOWED_USER_IDS, then restart the container.`);
