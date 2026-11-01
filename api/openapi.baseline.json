@@ -1,0 +1,764 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "agent-tools",
+    "version": "1.0.0",
+    "description": "Tools service of the agent container. Every endpoint marked x-mcp-tool is also an MCP tool at /mcp."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:7777"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Check the service is up, and whether Telegram is configured.",
+        "x-version": 1,
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "telegram": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notify": {
+      "post": {
+        "operationId": "notify",
+        "summary": "Send a Telegram message to the owner. At most 20 a minute.",
+        "x-version": 1,
+        "x-mcp-tool": "notify",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "The message"
+                  },
+                  "title": {
+                    "type": "string",
+                    "description": "Optional first line, such as the program or task name"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "sent": {
+                      "type": "integer",
+                      "description": "Number of Telegram users the message reached"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/email": {
+      "post": {
+        "operationId": "email",
+        "summary": "Send an email from the owner's configured mail account, to 'to' or, when it's left out, to MAIL_TO. If the owner set MAIL_ALLOWED_TO, only those addresses can receive mail. At most 30 an hour.",
+        "x-version": 1,
+        "x-mcp-tool": "email",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subject": {
+                    "type": "string",
+                    "description": "Subject line"
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "Plain-text body. Also shown by mail apps that don't display HTML."
+                  },
+                  "html": {
+                    "type": "string",
+                    "description": "Optional HTML body"
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "Optional comma-separated recipients, e.g. \"a@example.com, Name <b@example.com>\". Defaults to MAIL_TO."
+                  }
+                },
+                "required": [
+                  "subject",
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "to": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Addresses the mail was sent to"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/schedules": {
+      "get": {
+        "operationId": "list_schedules",
+        "summary": "List scheduled jobs with their last run: start, end, exit code, duration, and whether one is running now.",
+        "x-version": 1,
+        "x-mcp-tool": "list_schedules",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "timeZone": {
+                      "type": "string"
+                    },
+                    "jobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "add_schedule",
+        "summary": "Add a scheduled job, or replace the one with the same name. Runs `command` with sh in `cwd` on the `cron` schedule, in the container's time zone (TZ, default Europe/Stockholm).",
+        "x-version": 1,
+        "x-mcp-tool": "add_schedule",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Job name: lowercase letters, digits and hyphens, e.g. mynewsfeed-morning. Also the log name."
+                  },
+                  "cron": {
+                    "type": "string",
+                    "description": "Five cron fields (minute hour day month weekday), e.g. \"0 7 * * *\" for 07:00 daily or \"*/15 * * * *\" for every 15 minutes, or @daily, @hourly"
+                  },
+                  "command": {
+                    "type": "string",
+                    "description": "Shell command, e.g. ./run.sh or node src/index.js"
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "description": "Folder to run in, inside /workspace, e.g. /workspace/myNewsFeed. Default /workspace."
+                  },
+                  "notify": {
+                    "type": "string",
+                    "enum": [
+                      "failure",
+                      "always",
+                      "never"
+                    ],
+                    "description": "When to send a Telegram message about a run. Default failure."
+                  },
+                  "timeoutMinutes": {
+                    "type": "integer",
+                    "description": "Stop a run after this many minutes. Default 60."
+                  }
+                },
+                "required": [
+                  "name",
+                  "cron",
+                  "command"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "updated": {
+                      "type": "boolean"
+                    },
+                    "job": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/schedules/{name}": {
+      "delete": {
+        "operationId": "remove_schedule",
+        "summary": "Remove a scheduled job. Its log is kept.",
+        "x-version": 1,
+        "x-mcp-tool": "remove_schedule",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Job name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "removed": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/schedules/{name}/run": {
+      "post": {
+        "operationId": "run_schedule",
+        "summary": "Start a scheduled job now, in the background, e.g. to test it. 409 if it's already running. Follow it with GET /logs/{name}.",
+        "x-version": 1,
+        "x-mcp-tool": "run_schedule",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Job name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "started": {
+                      "type": "string"
+                    },
+                    "log": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logs": {
+      "get": {
+        "operationId": "list_logs",
+        "summary": "List the container's logs: agent (logins, Remote Control, scheduler) and one per scheduled job.",
+        "x-version": 1,
+        "x-mcp-tool": "list_logs",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "logs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logs/{name}": {
+      "get": {
+        "operationId": "get_log",
+        "summary": "Read the end of a log, e.g. /logs/agent?lines=200 or a scheduled job's log by its name.",
+        "x-version": 1,
+        "x-mcp-tool": "get_log",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Log name from GET /logs: 'agent' or a job name"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "description": "How many lines from the end. Default 100, max 5000."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "lines": {
+                      "type": "integer"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/usage": {
+      "get": {
+        "operationId": "get_usage",
+        "summary": "Who calls which endpoint or MCP tool: per operation, each caller (client header, scheduled job, project folder, program) with call count and first and last use.",
+        "x-version": 1,
+        "x-mcp-tool": "get_usage",
+        "parameters": [
+          {
+            "name": "operation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Only this operation, e.g. email. Default all."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "operations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config": {
+      "get": {
+        "operationId": "list_config",
+        "summary": "List the key names in the owner's central config (agent.env). Tokens are left out.",
+        "x-version": 1,
+        "x-mcp-tool": "list_config",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/{key}": {
+      "get": {
+        "operationId": "get_config",
+        "summary": "Read one value from agent.env. 404 if the key doesn't exist, 403 for tokens.",
+        "x-version": 1,
+        "x-mcp-tool": "get_config",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Key name, e.g. EXAMPLE_API_URL"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

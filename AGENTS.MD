@@ -27,7 +27,7 @@ The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials
 ## Tools service
 The container runs a tools service with two front doors over the same functions:
 
-- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) and the log tools (`list_logs`, `get_log`). They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
+- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) the log tools (`list_logs`, `get_log`) and `get_usage`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
 - **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
 Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To see what's available, read `$AGENT_TOOLS_URL/openapi.json` (an OpenAPI 3.1 description; endpoints marked `x-mcp-tool` are also MCP tools), `GET $AGENT_TOOLS_URL/` for a short list, or run `agent-tools api`. Check it rather than relying only on the table below, which may lag behind new features.
@@ -43,6 +43,7 @@ Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To 
 | `GET /config` | Lists the available keys (names only). |
 | `GET /schedules`, `POST /schedules`, `DELETE /schedules/<name>`, `POST /schedules/<name>/run` | List, add or replace, remove and test-run scheduled jobs. See "Scheduled jobs" below. |
 | `GET /logs`, `GET /logs/<name>?lines=100` | List the logs and read the end of one: `agent`, or a scheduled job's name. |
+| `GET /usage?operation=<id>` | Shows who calls each endpoint and tool: apps, jobs, projects, how often and when last. |
 | `GET /health` | Checks the service is up, and whether Telegram is configured. |
 | `GET /openapi.json` | Describes every endpoint, its inputs and its responses. |
 | `GET /` | Lists the endpoints, and which are also MCP tools. |
@@ -53,27 +54,35 @@ const TOOLS = process.env.AGENT_TOOLS_URL ?? "http://127.0.0.1:7777";
 
 await fetch(`${TOOLS}/notify`, {
   method: "POST",
-  headers: { "content-type": "application/json" },
+  headers: { "content-type": "application/json", "x-agent-client": "price-watcher" },
   body: JSON.stringify({ title: "Price watcher", text: "Price dropped below 100" }),
 });
 
-const { value: apiUrl } = await (await fetch(`${TOOLS}/config/EXAMPLE_API_URL`)).json();
+const { value: apiUrl } = await (await fetch(`${TOOLS}/config/EXAMPLE_API_URL`, {
+  headers: { "x-agent-client": "price-watcher" },
+})).json();
 ```
 
 From a shell script:
 ```bash
+export AGENT_CLIENT=nightly-backup   # names the script in GET /usage
 agent-tools notify "Backup finished" --title "Nightly job"
 agent-tools email "Morning digest" "Plain-text version" --html out/digest.html
 API_URL=$(agent-tools config EXAMPLE_API_URL)
 ```
 
 Rules:
+- Name the calling program: send the header `X-Agent-Client: <project or app name>` on every request (from shell scripts, set `AGENT_CLIENT` for `agent-tools`). The service also detects the calling process and folder by itself, but the name makes `GET /usage` clear.
+- Endpoints are versioned and never change incompatibly. Paths without a prefix are v1. If an endpoint is marked `deprecated` (in `/openapi.json`, the `GET /` list, or the MCP tool description), use the replacement it names, usually a `/v2/...` path, in new code.
 - Read configuration values at runtime through this service. Never copy them into code or commit them.
 - If a program needs a value that doesn't exist yet, tell the owner the key name to add to `agent.env`. Don't invent a value.
 - The Telegram bot token, `GH_TOKEN` and `SMTP_PASS` are never available from `/config`. Send messages through `/notify` and `/email`, and use `gh` and `git` for GitHub.
 - Use `/email` for longer content the owner wants by mail (reports, digests), and `/notify` for short alerts. Never add your own SMTP code or ask for mail credentials.
 - Leave `to` out to mail the owner. Only send to other people when the owner asked for it. If the owner restricted recipients with `MAIL_ALLOWED_TO` and a send is refused, ask them to add the address instead of working around it.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
+
+## Changing the tools service itself
+If you're working on this container's own code (`agent.mjs` in the agent-container repo), follow the COMPATIBILITY RULES next to the API registry in `agent.mjs`: existing endpoints and MCP tools are only ever extended; a breaking change becomes a new `/v2/...` entry and the old one is marked deprecated. CI checks this against `api/openapi.baseline.json`. Check `GET /usage` before deprecating anything.
 
 ## Scheduled jobs
 When something should run regularly (a daily script, a check every 15 minutes), schedule it with `add_schedule` (or `POST /schedules`). Never use crontab, systemd timers, `at` or a sleep loop: they don't survive container updates, and nobody would see their failures.

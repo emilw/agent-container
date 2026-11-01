@@ -7,7 +7,7 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import {
   accessSync, appendFileSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync,
-  readdirSync, renameSync, closeSync, statSync, unlinkSync, writeFileSync,
+  readdirSync, readlinkSync, renameSync, closeSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { createServer } from "node:http";
@@ -760,10 +760,146 @@ function toolsGetLog({ name, lines = 100 }) {
   return [200, { ok: true, name, lines: text.length, text: text.join("\n") }];
 }
 
+// ---------- usage ----------
+// Every API and MCP call is recorded with who made it, so before an endpoint is deprecated
+// we know who still uses it. Callers are identified two ways: an optional X-Agent-Client
+// header naming the app, and automatically through /proc: the process on the other end of
+// the localhost connection, its folder (so its project in /workspace) and its scheduled job.
+// Each call is appended to /config/logs/usage.log; per-caller totals are kept for good in
+// /config/state/usage.json.
+
+const USAGE_LOG = `${LOG_DIR}/usage.log`;
+const USAGE_FILE = `${STATE_DIR}/usage.json`;
+let usage = null; // { "<operation>": { "<caller key>": { ...caller, count, first, last } } }
+let usageSaveTimer = null;
+
+function describeProcess(pid) {
+  const read = (f) => { try { return readFileSync(`/proc/${pid}/${f}`, "utf8"); } catch { return ""; } };
+  let cwd = null;
+  try { cwd = readlinkSync(`/proc/${pid}/cwd`); } catch {}
+  const argv = read("cmdline").split("\0").filter(Boolean);
+  // "node /usr/local/bin/agent-tools ..." reads better as "agent-tools ..."
+  const shown = argv[0]?.endsWith("node") && argv[1] ? argv.slice(1) : argv;
+  const program = shown[0]?.split("/").pop() ?? read("comm").trim();
+  const job = read("environ").split("\0").find((v) => v.startsWith("AGENT_JOB_NAME="))?.slice(15) || null;
+  const project = cwd?.startsWith(`${WORKSPACE_DIR}/`) ? cwd.slice(WORKSPACE_DIR.length + 1).split("/")[0] : null;
+  // Only the program and its first argument (e.g. "node app.mjs"): later arguments can hold
+  // message text or secrets, which don't belong in the usage log.
+  return { pid: Number(pid), program, command: [program, shown[1]].filter(Boolean).join(" ").slice(0, 120), cwd, project, job };
+}
+
+// Finds the process that owns the client end of a localhost connection.
+function callerProcess(socket) {
+  try {
+    const local = `0100007F:${socket.remotePort.toString(16).toUpperCase().padStart(4, "0")}`;
+    const row = readFileSync("/proc/net/tcp", "utf8").split("\n").map((l) => l.trim().split(/\s+/)).find((f) => f[1] === local);
+    if (!row) return null;
+    const target = `socket:[${row[9]}]`;
+    for (const pid of readdirSync("/proc")) {
+      if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+      let fds;
+      try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+      for (const fd of fds) {
+        try { if (readlinkSync(`/proc/${pid}/fd/${fd}`) === target) return describeProcess(pid); } catch {}
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function identifyCaller(req) {
+  const header = req.headers["x-agent-client"];
+  const client = typeof header === "string" && header.trim() ? header.trim().slice(0, 80) : null;
+  const proc = callerProcess(req.socket);
+  return {
+    client,
+    job: proc?.job ?? null,
+    project: proc?.project ?? null,
+    program: proc?.program ?? "unknown",
+    command: proc?.command ?? null,
+    cwd: proc?.cwd ?? null,
+  };
+}
+
+const callerLabel = (c) =>
+  [c.client, c.job && `job ${c.job}`, c.project ?? c.cwd, c.program].filter(Boolean).join(" · ");
+
+function loadUsage() {
+  if (usage) return usage;
+  try { usage = JSON.parse(readFileSync(USAGE_FILE, "utf8")); } catch { usage = {}; }
+  return usage;
+}
+
+function recordUsage(route, via, caller, status) {
+  const now = new Date().toISOString();
+  const operation = route.id;
+  try {
+    if (existsSync(USAGE_LOG) && statSync(USAGE_LOG).size > AGENT_LOG_MAX_BYTES) renameSync(USAGE_LOG, `${USAGE_LOG}.1`);
+    appendFileSync(USAGE_LOG, JSON.stringify({ time: now, operation, version: route.version, via, status, ...caller }) + "\n");
+  } catch {}
+
+  const key = [caller.client, caller.job, caller.project ?? caller.cwd, caller.program, via].join("|");
+  const byCaller = (loadUsage()[operation] ??= {});
+  const entry = (byCaller[key] ??= {
+    client: caller.client, job: caller.job, project: caller.project, cwd: caller.cwd, program: caller.program, via, count: 0, first: now,
+  });
+  entry.count++;
+  entry.last = now;
+  entry.lastCommand = caller.command;
+  entry.lastStatus = status;
+  clearTimeout(usageSaveTimer);
+  usageSaveTimer = setTimeout(saveUsage, 5_000);
+}
+
+function saveUsage() {
+  if (!usage) return;
+  try {
+    writeFileSync(`${USAGE_FILE}.tmp`, JSON.stringify(usage, null, 2));
+    renameSync(`${USAGE_FILE}.tmp`, USAGE_FILE);
+  } catch (e) {
+    log(`Could not save usage: ${e.message}`);
+  }
+}
+
+function toolsGetUsage({ operation }) {
+  const all = loadUsage();
+  const routes = API.filter((r) => !operation || r.id === operation);
+  if (operation && !routes.length) return [404, { ok: false, error: `No operation ${operation}. GET / lists them.` }];
+  const operations = routes.map((r) => {
+    const callers = Object.values(all[r.id] ?? {})
+      .map((c) => ({ caller: callerLabel(c), ...c }))
+      .sort((a, b) => b.last.localeCompare(a.last));
+    return {
+      operation: r.id,
+      method: r.method,
+      path: r.path,
+      version: r.version,
+      ...(r.deprecated && { deprecated: r.deprecated }),
+      calls: callers.reduce((n, c) => n + c.count, 0),
+      callers,
+    };
+  });
+  return [200, { ok: true, operations }];
+}
+
 // Each entry: id (OpenAPI operationId and MCP tool name), method, path ({name} segments are
 // path parameters), summary, input (JSON Schema properties; path parameters plus the JSON
-// body), required, response (properties returned besides ok), run(input) -> [status, body],
-// and mcp ({ description, result(body) -> text }) to also expose it as an MCP tool.
+// body for POST, or query parameters otherwise), required, response (properties returned
+// besides ok), run(input) -> [status, body], mcp ({ description, result(body) -> text }) to
+// also expose it as an MCP tool, and deprecated ("use <id> instead") once a newer version
+// replaces it.
+//
+// COMPATIBILITY RULES. Programs and agents depend on these endpoints and tools, so an
+// existing one must never break. scripts/check-api.mjs enforces this in CI against
+// api/openapi.baseline.json.
+// - Allowed: new endpoints, new optional inputs, new response fields, new enum values,
+//   accepting input that used to be rejected.
+// - Not allowed on an existing endpoint or tool: removing or renaming it, its inputs or its
+//   response fields; changing a type; making an optional input required; removing enum
+//   values; changing what a field means.
+// - For a breaking change, add a new entry under /v2/... (id e.g. "email_v2") next to the
+//   old one, and mark the old one deprecated. GET /usage shows who still calls it; remove it
+//   only once nothing does, and only as a deliberate baseline update.
 const API = [
   {
     id: "health",
@@ -897,6 +1033,22 @@ const API = [
     },
   },
   {
+    id: "get_usage",
+    method: "GET",
+    path: "/usage",
+    summary: "Who calls which endpoint or MCP tool: per operation, each caller (client header, scheduled job, project folder, program) with call count and first and last use.",
+    input: { operation: { type: "string", description: "Only this operation, e.g. email. Default all." } },
+    response: { operations: { type: "array", items: { type: "object" } } },
+    run: toolsGetUsage,
+    mcp: {
+      description: "See which apps, jobs and agents call each tools-service endpoint, how often and when last. Use it before changing or deprecating an endpoint.",
+      result: (body) => body.operations
+        .map((o) => `${o.operation} (${o.method} ${o.path}${o.deprecated ? ", deprecated" : ""}): ${o.calls} call(s)` +
+          o.callers.map((c) => `\n  ${c.caller} via ${c.via}: ${c.count}, last ${c.last}`).join(""))
+        .join("\n"),
+    },
+  },
+  {
     id: "list_config",
     method: "GET",
     path: "/config",
@@ -927,10 +1079,19 @@ const API = [
 for (const route of API) {
   route.params = [...route.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
   route.pattern = new RegExp(`^${route.path.replace(/\{\w+\}/g, "([^/]+)")}/?$`);
+  // Paths without a version prefix are v1; a breaking change gets a new /v2/... entry.
+  route.version = Number(route.path.match(/^\/v(\d+)\//)?.[1] ?? 1);
 }
 
-// Shared by REST and MCP, so both get the same input checks.
-async function callRoute(route, input) {
+// Shared by REST and MCP, so both get the same input checks and usage records.
+// ctx: { via: "rest" | "mcp", caller } from identifyCaller.
+async function callRoute(route, input, ctx) {
+  const result = await validateAndRun(route, input);
+  if (ctx) recordUsage(route, ctx.via, ctx.caller, result[0]);
+  return result;
+}
+
+async function validateAndRun(route, input) {
   for (const name of route.required ?? []) {
     if (typeof input[name] !== "string" || !input[name].trim()) {
       return [400, { ok: false, error: `${name} is required` }];
@@ -958,7 +1119,10 @@ function apiIndex() {
     ok: true,
     openapi: "/openapi.json",
     mcp: "/mcp",
-    endpoints: API.map((r) => ({ method: r.method, path: r.path, summary: r.summary, mcpTool: r.mcp ? r.id : null })),
+    endpoints: API.map((r) => ({
+      method: r.method, path: r.path, summary: r.summary, version: r.version, mcpTool: r.mcp ? r.id : null,
+      ...(r.deprecated && { deprecated: r.deprecated }),
+    })),
   };
 }
 
@@ -978,6 +1142,8 @@ function openApiSpec() {
     const op = {
       operationId: r.id,
       summary: r.summary,
+      "x-version": r.version,
+      ...(r.deprecated && { deprecated: true, description: `Deprecated: ${r.deprecated}.` }),
       ...(r.mcp && { "x-mcp-tool": r.id }),
       ...(parameters.length && { parameters }),
       ...(bodyFields.length && {
@@ -1039,18 +1205,18 @@ Every tool is also a REST endpoint at $AGENT_TOOLS_URL, described by $AGENT_TOOL
 const mcpTools = () =>
   API.filter((r) => r.mcp).map((r) => ({
     name: r.id,
-    description: r.mcp.description,
+    description: r.deprecated ? `Deprecated: ${r.deprecated}. ${r.mcp.description}` : r.mcp.description,
     inputSchema: { type: "object", properties: r.input ?? {}, required: r.required ?? [] },
   }));
 
-async function mcpCallTool(name, args) {
+async function mcpCallTool(name, args, ctx) {
   const route = API.find((r) => r.mcp && r.id === name);
   if (!route) return null;
-  const [, body] = await callRoute(route, args && typeof args === "object" ? args : {});
+  const [, body] = await callRoute(route, args && typeof args === "object" ? args : {}, ctx);
   return { content: [{ type: "text", text: body.ok ? route.mcp.result(body) : body.error }], isError: !body.ok };
 }
 
-async function handleMcp(raw) {
+async function handleMcp(raw, caller) {
   const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
   let msg;
   try { msg = JSON.parse(raw); } catch { return [400, rpcError(null, -32700, "Parse error")]; }
@@ -1073,7 +1239,7 @@ async function handleMcp(raw) {
     case "tools/list":
       return result({ tools: mcpTools() });
     case "tools/call": {
-      const called = await mcpCallTool(params?.name, params?.arguments);
+      const called = await mcpCallTool(params?.name, params?.arguments, { via: "mcp", caller: caller() });
       return called ? result(called) : [200, rpcError(id, -32602, `Unknown tool: ${params?.name}`)];
     }
     default:
@@ -1099,10 +1265,12 @@ async function registerMcpServer() {
 
 async function handleTools(req) {
   const { pathname, searchParams } = new URL(req.url, "http://localhost");
+  let who;
+  const caller = () => (who ??= identifyCaller(req));
 
   if (pathname === "/mcp") {
     return req.method === "POST"
-      ? handleMcp(await readBody(req))
+      ? handleMcp(await readBody(req), caller)
       : [405, { ok: false, error: "MCP clients POST JSON-RPC to /mcp" }];
   }
   if (req.method === "GET" && pathname === "/") return [200, apiIndex()];
@@ -1124,7 +1292,7 @@ async function handleTools(req) {
       }
     }
     route.params.forEach((name, i) => { input[name] = decodeURIComponent(m[i + 1]); });
-    return callRoute(route, input);
+    return callRoute(route, input, { via: "rest", caller: caller() });
   }
   return [404, { ok: false, error: "Unknown endpoint. GET / lists the endpoints, GET /openapi.json describes them." }];
 }
@@ -1150,6 +1318,7 @@ function startToolsServer() {
 for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => {
     stopping = true;
+    saveUsage();
     try { supercronic?.kill("SIGTERM"); } catch {}
     try { tmux("kill-server"); } catch {}
     process.exit(0);

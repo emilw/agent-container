@@ -16,7 +16,11 @@ const [cmd, ...args] = process.argv.slice(2);
 async function call(method, path, body) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: body ? { "content-type": "application/json" } : undefined,
+    headers: {
+      ...(body && { "content-type": "application/json" }),
+      // Lets a script name itself in GET /usage, e.g. AGENT_CLIENT=backup-script
+      ...(process.env.AGENT_CLIENT && { "x-agent-client": process.env.AGENT_CLIENT }),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json();

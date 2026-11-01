@@ -96,7 +96,7 @@ if (job.notify === "always" || (failed && job.notify !== "never")) {
   try {
     await fetch(`${process.env.AGENT_TOOLS_URL || "http://127.0.0.1:7777"}/notify`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-agent-client": `agent-run (job ${name})` },
       body: JSON.stringify({ title: `Job ${name}`, text }),
       signal: AbortSignal.timeout(20_000),
     });
