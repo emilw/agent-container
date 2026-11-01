@@ -38,7 +38,7 @@ Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To 
 | Call | Does |
 | --- | --- |
 | `POST /notify` with `{"text": "...", "title": "optional"}` | Sends a Telegram message to the owner. Max 20 a minute. |
-| `POST /email` with `{"subject": "...", "text": "...", "html": "optional", "to": "optional"}` | Sends an email from the owner's mail account, to `MAIL_TO` by default. `to` may only name addresses in `MAIL_TO` or `MAIL_ALLOWED_TO`. Max 30 an hour. |
+| `POST /email` with `{"subject": "...", "text": "...", "html": "optional", "to": "optional"}` | Sends an email from the owner's mail account, to `to` (comma-separated), or to the owner's default address `MAIL_TO` when `to` is left out. Max 30 an hour. |
 | `GET /config/<KEY>` | Returns `{"value": "..."}` from the owner's central config, `agent.env`. 404 if the key doesn't exist. |
 | `GET /config` | Lists the available keys (names only). |
 | `GET /health` | Checks the service is up, and whether Telegram is configured. |
@@ -70,5 +70,5 @@ Rules:
 - If a program needs a value that doesn't exist yet, tell the owner the key name to add to `agent.env`. Don't invent a value.
 - The Telegram bot token, `GH_TOKEN` and `SMTP_PASS` are never available from `/config`. Send messages through `/notify` and `/email`, and use `gh` and `git` for GitHub.
 - Use `/email` for longer content the owner wants by mail (reports, digests), and `/notify` for short alerts. Never add your own SMTP code or ask for mail credentials.
-- If mail must go to someone other than the owner, ask the owner to add the address to `MAIL_ALLOWED_TO`. Don't work around it.
+- Leave `to` out to mail the owner. Only send to other people when the owner asked for it. If the owner restricted recipients with `MAIL_ALLOWED_TO` and a send is refused, ask them to add the address instead of working around it.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
