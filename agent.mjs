@@ -508,23 +508,37 @@ const EMAIL_LIMIT_PER_HOUR = 30;
 let emailTimes = [];
 const splitList = (s) => (s ?? "").split(",").map((a) => a.trim()).filter(Boolean);
 
+// Recipients from apps go straight into the mail headers, so accept only a plain address,
+// optionally written as "Name <address>", and send to the bare address. Anything else,
+// such as a CR/LF trying to add a header, is rejected.
+const EMAIL_ADDRESS = /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"()[\]\\]+\.[^\s@<>,;:"()[\]\\]+$/;
+function parseRecipient(s) {
+  const named = s.match(/^[^<>"\r\n]*<([^<>\r\n]+)>$/);
+  const address = (named ? named[1] : s).trim();
+  return EMAIL_ADDRESS.test(address) ? address : null;
+}
+
 async function toolsEmail({ subject, text, html, to }) {
   // Read the SMTP settings on every send, so edits to agent.env apply without a restart.
   const env = parseEnvFile(ENV_FILE);
-  const missing = ["SMTP_HOST", "MAIL_FROM", "MAIL_TO"].filter((k) => !env[k]);
+  const missing = ["SMTP_HOST", "MAIL_FROM"].filter((k) => !env[k]);
   if (missing.length) return [503, { ok: false, error: `Email is not configured: add ${missing.join(", ")} to agent.env` }];
 
-  // Recipients always come from agent.env, so mail only goes to addresses the owner listed.
-  let recipients = splitList(env.MAIL_TO);
-  if (to !== undefined) {
-    const allowed = new Map([...recipients, ...splitList(env.MAIL_ALLOWED_TO)].map((a) => [addr(a).toLowerCase(), a]));
-    const asked = splitList(to);
-    const unknown = asked.filter((a) => !allowed.has(addr(a).toLowerCase()));
-    if (!asked.length) return [400, { ok: false, error: "to is empty" }];
-    if (unknown.length) {
-      return [403, { ok: false, error: `Not an allowed recipient: ${unknown.join(", ")}. The owner can add it to MAIL_ALLOWED_TO in agent.env.` }];
-    }
-    recipients = asked.map((a) => allowed.get(addr(a).toLowerCase()));
+  // The app's "to" wins; MAIL_TO is only the default.
+  const asked = splitList(to ?? env.MAIL_TO);
+  if (!asked.length) {
+    return [400, { ok: false, error: to === undefined ? "No recipient: send \"to\", or set MAIL_TO in agent.env as the default" : "to is empty" }];
+  }
+  const recipients = asked.map(parseRecipient);
+  const invalid = asked.filter((_, i) => !recipients[i]);
+  if (invalid.length) return [400, { ok: false, error: `Not a valid email address: ${invalid.join(", ")}` }];
+
+  // Optional: when the owner sets MAIL_ALLOWED_TO, only those addresses (and MAIL_TO) can receive mail.
+  const allowList = splitList(env.MAIL_ALLOWED_TO);
+  if (allowList.length) {
+    const allowed = new Set([...allowList, ...splitList(env.MAIL_TO)].map((a) => addr(a).toLowerCase()));
+    const blocked = recipients.filter((r) => !allowed.has(r.toLowerCase()));
+    if (blocked.length) return [403, { ok: false, error: `Not in MAIL_ALLOWED_TO: ${blocked.join(", ")}` }];
   }
 
   const now = Date.now();
@@ -543,7 +557,7 @@ async function toolsEmail({ subject, text, html, to }) {
     log(`Email failed: ${e.message}`);
     return [502, { ok: false, error: `Sending failed: ${e.message}` }];
   }
-  return [200, { ok: true, to: recipients.map(addr) }];
+  return [200, { ok: true, to: recipients }];
 }
 
 // Each entry: id (OpenAPI operationId and MCP tool name), method, path ({name} segments are
@@ -580,18 +594,18 @@ const API = [
     id: "email",
     method: "POST",
     path: "/email",
-    summary: `Send an email from the owner's configured mail account. Goes to MAIL_TO; 'to' may only name addresses in MAIL_TO or MAIL_ALLOWED_TO. At most ${EMAIL_LIMIT_PER_HOUR} an hour.`,
+    summary: `Send an email from the owner's configured mail account, to 'to' or, when it's left out, to MAIL_TO. If the owner set MAIL_ALLOWED_TO, only those addresses can receive mail. At most ${EMAIL_LIMIT_PER_HOUR} an hour.`,
     input: {
       subject: { type: "string", description: "Subject line" },
       text: { type: "string", description: "Plain-text body. Also shown by mail apps that don't display HTML." },
       html: { type: "string", description: "Optional HTML body" },
-      to: { type: "string", description: "Optional comma-separated recipients; each must be in MAIL_TO or MAIL_ALLOWED_TO. Defaults to MAIL_TO." },
+      to: { type: "string", description: "Optional comma-separated recipients, e.g. \"a@example.com, Name <b@example.com>\". Defaults to MAIL_TO." },
     },
     required: ["subject", "text"],
     response: { to: { type: "array", items: { type: "string" }, description: "Addresses the mail was sent to" } },
     run: toolsEmail,
     mcp: {
-      description: "Send the owner an email. Use it for longer content the owner wants by mail, such as reports, digests or summaries; use notify for short alerts. Goes to the owner unless 'to' names an address the owner allowed.",
+      description: "Send an email. Use it for longer content the owner wants by mail, such as reports, digests or summaries; use notify for short alerts. Goes to the owner's default address (MAIL_TO) unless 'to' is given. Only send to other people when the owner asked for it.",
       result: (body) => `Sent to ${body.to.join(", ")}.`,
     },
   },
@@ -715,7 +729,7 @@ const MCP_NAME = "agent-tools";
 
 const MCP_INSTRUCTIONS = `Tools provided by the container this session runs in, on the owner's NAS.
 - notify: send the owner a Telegram message. Use it when the owner asked to be told about something (a result, a finished long task, a failure in something they rely on). Don't use it for progress updates or debugging, and don't send the same message twice.
-- email: send the owner an email, for longer content they want by mail (reports, digests, summaries). Use notify for short alerts. Only addresses the owner listed can receive mail.
+- email: send an email, for longer content the owner wants by mail (reports, digests, summaries). Use notify for short alerts. It goes to the owner by default; only send to other people when the owner asked for it.
 - get_config / list_config: read values from the owner's central config (agent.env). Use these for URLs, account names and other settings instead of asking the owner or hardcoding values. If a needed key is missing, tell the owner the exact key name to add; never invent a value. Bot and GitHub tokens are never returned.
 Every tool is also a REST endpoint at $AGENT_TOOLS_URL, described by $AGENT_TOOLS_URL/openapi.json. Programs you write in /workspace can't use MCP, so they must call those endpoints instead.`;
 

@@ -129,8 +129,9 @@ Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777
 
 - `POST /notify` with `{"text": "...", "title": "..."}` sends you a Telegram message (max 20 a minute)
 - `POST /email` with `{"subject", "text", "html", "to"}` sends an email through your SMTP account (max 30 an hour).
-  Set the `SMTP_*` and `MAIL_*` keys in `agent.env`. Mail goes to `MAIL_TO`; programs can name other
-  recipients only if they're in `MAIL_ALLOWED_TO`. Port 587 uses STARTTLS, 465 TLS.
+  Set the `SMTP_*` and `MAIL_*` keys in `agent.env`. Mail goes to the app's `to`, or to
+  `MAIL_TO` when it leaves `to` out. Optionally, `MAIL_ALLOWED_TO` limits who apps can send to.
+  Port 587 uses STARTTLS, 465 TLS.
 - `GET /config/<KEY>` returns a value from `config/agent.env`; `GET /config` lists the keys
 
 Every key in `agent.env` is served except `TELEGRAM_TOKEN`, `GH_TOKEN` and `SMTP_PASS`. Value changes apply
