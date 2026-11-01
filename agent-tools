@@ -3,6 +3,7 @@
 //   agent-tools notify "Backup finished" [--title "Nightly job"]
 //   agent-tools config            list keys in agent.env
 //   agent-tools config KEY        print one value
+//   agent-tools api               list every endpoint (GET /openapi.json has the details)
 const base = process.env.AGENT_TOOLS_URL || "http://127.0.0.1:7777";
 const [cmd, ...args] = process.argv.slice(2);
 
@@ -28,8 +29,11 @@ try {
   } else if (cmd === "config" && args.length <= 1) {
     const data = await call("GET", args[0] ? `/config/${encodeURIComponent(args[0])}` : "/config");
     console.log(args[0] ? data.value : data.keys.join("\n"));
+  } else if (cmd === "api" && !args.length) {
+    const { endpoints } = await call("GET", "/");
+    for (const e of endpoints) console.log(`${e.method.padEnd(5)}${e.path.padEnd(16)}${e.summary}`);
   } else {
-    console.error('Usage: agent-tools notify "text" [--title "title"] | agent-tools config [KEY]');
+    console.error('Usage: agent-tools notify "text" [--title "title"] | agent-tools config [KEY] | agent-tools api');
     process.exit(2);
   }
 } catch (e) {

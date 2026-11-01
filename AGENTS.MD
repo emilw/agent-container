@@ -20,6 +20,8 @@ The container runs a tools service with two front doors over the same functions:
 - **You (Claude) use the `agent-tools` MCP tools:** `notify`, `get_config` and `list_config`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
 - **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
+Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To see what's available, read `$AGENT_TOOLS_URL/openapi.json` (an OpenAPI 3.1 description; endpoints marked `x-mcp-tool` are also MCP tools), `GET $AGENT_TOOLS_URL/` for a short list, or run `agent-tools api`. Check it rather than relying only on the table below, which may lag behind new features.
+
 - Base URL: `$AGENT_TOOLS_URL` (default `http://127.0.0.1:7777`). Only reachable from inside this container.
 - All responses are JSON with `ok: true` on success, or `ok: false` and an `error` message.
 
@@ -29,6 +31,8 @@ The container runs a tools service with two front doors over the same functions:
 | `GET /config/<KEY>` | Returns `{"value": "..."}` from the owner's central config, `agent.env`. 404 if the key doesn't exist. |
 | `GET /config` | Lists the available keys (names only). |
 | `GET /health` | Checks the service is up, and whether Telegram is configured. |
+| `GET /openapi.json` | Describes every endpoint, its inputs and its responses. |
+| `GET /` | Lists the endpoints, and which are also MCP tools. |
 
 From Node.js (18+, no packages needed):
 ```js

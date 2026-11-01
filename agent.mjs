@@ -459,28 +459,16 @@ async function watchdog() {
 }
 
 // ---------- tools API ----------
-// Localhost only: for programs running in the container. See AGENTS.MD for usage.
+// Localhost only, for everything running in the container. One registry, two front doors:
+// every feature is an entry in API below with a REST route (for programs in /workspace)
+// and optionally an MCP tool (for Claude sessions). REST routing, the MCP tool list and
+// /openapi.json are all generated from it, so no feature exists in MCP without a REST
+// endpoint. Add new features as API entries.
 
 const NOTIFY_LIMIT_PER_MINUTE = 20;
 let notifyTimes = [];
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 64 * 1024) reject(Object.assign(new Error("Body too large"), { status: 413 }));
-    });
-    req.on("end", () => resolve(body));
-    req.on("error", reject);
-  });
-}
-
-async function toolsNotify(body) {
-  let input;
-  try { input = JSON.parse(body || "{}"); } catch { input = null; }
-  const text = typeof input?.text === "string" ? input.text.trim() : "";
-  if (!text) return [400, { ok: false, error: 'Send JSON like {"text": "..."}' }];
+async function toolsNotify({ text, title }) {
   if (!telegram) return [503, { ok: false, error: "Telegram is not configured in agent.env" }];
 
   const now = Date.now();
@@ -490,8 +478,8 @@ async function toolsNotify(body) {
   }
   notifyTimes.push(now);
 
-  const title = typeof input.title === "string" && input.title.trim() ? `${input.title.trim()}\n` : "";
-  const message = `[${cfg.name}] ${title}${text}`.slice(0, 4096);
+  const heading = title?.trim() ? `${title.trim()}\n` : "";
+  const message = `[${cfg.name}] ${heading}${text.trim()}`.slice(0, 4096);
   let sent = 0;
   for (const id of cfg.users) {
     try {
@@ -508,66 +496,177 @@ function toolsConfig(key) {
   // Read the file on every request, so edits apply without a restart.
   const values = Object.fromEntries(
     Object.entries(parseEnvFile(ENV_FILE)).filter(([k]) => !HIDDEN_CONFIG_KEYS.has(k)));
-  if (!key) return [200, { ok: true, keys: Object.keys(values) }];
+  if (key === undefined) return [200, { ok: true, keys: Object.keys(values) }];
   if (HIDDEN_CONFIG_KEYS.has(key)) return [403, { ok: false, error: `${key} is not available through the tools API` }];
   return key in values
     ? [200, { ok: true, key, value: values[key] }]
     : [404, { ok: false, error: `No ${key} in agent.env` }];
 }
 
+// Each entry: id (OpenAPI operationId and MCP tool name), method, path ({name} segments are
+// path parameters), summary, input (JSON Schema properties; path parameters plus the JSON
+// body), required, response (properties returned besides ok), run(input) -> [status, body],
+// and mcp ({ description, result(body) -> text }) to also expose it as an MCP tool.
+const API = [
+  {
+    id: "health",
+    method: "GET",
+    path: "/health",
+    summary: "Check the service is up, and whether Telegram is configured.",
+    response: { telegram: { type: "boolean" } },
+    run: () => [200, { ok: true, telegram }],
+  },
+  {
+    id: "notify",
+    method: "POST",
+    path: "/notify",
+    summary: `Send a Telegram message to the owner. At most ${NOTIFY_LIMIT_PER_MINUTE} a minute.`,
+    input: {
+      text: { type: "string", description: "The message" },
+      title: { type: "string", description: "Optional first line, such as the program or task name" },
+    },
+    required: ["text"],
+    response: { sent: { type: "integer", description: "Number of Telegram users the message reached" } },
+    run: toolsNotify,
+    mcp: {
+      description: `Send a Telegram message to the owner's phone. For results or events the owner asked to hear about, not progress or debugging. At most ${NOTIFY_LIMIT_PER_MINUTE} a minute.`,
+      result: (body) => `Sent to ${body.sent} Telegram user(s).`,
+    },
+  },
+  {
+    id: "list_config",
+    method: "GET",
+    path: "/config",
+    summary: "List the key names in the owner's central config (agent.env). Tokens are left out.",
+    response: { keys: { type: "array", items: { type: "string" } } },
+    run: () => toolsConfig(),
+    mcp: {
+      description: "List the key names in the owner's central config (agent.env). Read values with get_config.",
+      result: (body) => body.keys.join("\n") || "(agent.env has no keys you can read)",
+    },
+  },
+  {
+    id: "get_config",
+    method: "GET",
+    path: "/config/{key}",
+    summary: "Read one value from agent.env. 404 if the key doesn't exist, 403 for tokens.",
+    input: { key: { type: "string", description: "Key name, e.g. EXAMPLE_API_URL" } },
+    required: ["key"],
+    response: { key: { type: "string" }, value: { type: "string" } },
+    run: ({ key }) => toolsConfig(key),
+    mcp: {
+      description: "Read one value from the owner's central config (agent.env). If the key doesn't exist, tell the owner which key to add instead of guessing a value.",
+      result: (body) => body.value,
+    },
+  },
+];
+
+for (const route of API) {
+  route.params = [...route.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+  route.pattern = new RegExp(`^${route.path.replace(/\{\w+\}/g, "([^/]+)")}/?$`);
+}
+
+// Shared by REST and MCP, so both get the same input checks.
+async function callRoute(route, input) {
+  for (const name of route.required ?? []) {
+    if (typeof input[name] !== "string" || !input[name].trim()) {
+      return [400, { ok: false, error: `${name} is required` }];
+    }
+  }
+  for (const [name, schema] of Object.entries(route.input ?? {})) {
+    if (input[name] !== undefined && schema.type === "string" && typeof input[name] !== "string") {
+      return [400, { ok: false, error: `${name} must be a string` }];
+    }
+  }
+  return route.run(input);
+}
+
+function apiIndex() {
+  return {
+    ok: true,
+    openapi: "/openapi.json",
+    mcp: "/mcp",
+    endpoints: API.map((r) => ({ method: r.method, path: r.path, summary: r.summary, mcpTool: r.mcp ? r.id : null })),
+  };
+}
+
+function openApiSpec() {
+  const json = (schema) => ({ "application/json": { schema } });
+  const error = { type: "object", properties: { ok: { const: false }, error: { type: "string" } } };
+  const paths = {};
+  for (const r of API) {
+    const bodyFields = Object.keys(r.input ?? {}).filter((k) => !r.params.includes(k));
+    const op = {
+      operationId: r.id,
+      summary: r.summary,
+      ...(r.mcp && { "x-mcp-tool": r.id }),
+      ...(r.params.length && {
+        parameters: r.params.map((name) => ({ name, in: "path", required: true, schema: r.input[name] })),
+      }),
+      ...(bodyFields.length && {
+        requestBody: {
+          required: true,
+          content: json({
+            type: "object",
+            properties: Object.fromEntries(bodyFields.map((k) => [k, r.input[k]])),
+            required: (r.required ?? []).filter((k) => bodyFields.includes(k)),
+          }),
+        },
+      }),
+      responses: {
+        200: { description: "Success", content: json({ type: "object", properties: { ok: { const: true }, ...r.response } }) },
+        default: { description: "Error", content: json(error) },
+      },
+    };
+    (paths[r.path] ??= {})[r.method.toLowerCase()] = op;
+  }
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "agent-tools",
+      version: "1.0.0",
+      description: "Tools service of the agent container. Every endpoint marked x-mcp-tool is also an MCP tool at /mcp.",
+    },
+    servers: [{ url: `http://127.0.0.1:${cfg.toolsPort}` }],
+    paths,
+  };
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 64 * 1024) reject(Object.assign(new Error("Body too large"), { status: 413 }));
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
 // ---------- MCP ----------
-// The same tools for Claude sessions, as an MCP server (streamable HTTP, stateless JSON
-// responses) at /mcp. Registered at user scope, so every session in the container gets it.
+// The API's mcp entries as an MCP server (streamable HTTP, stateless JSON responses) at
+// /mcp. Registered at user scope, so every Claude session in the container gets it.
 
 const MCP_NAME = "agent-tools";
 
 const MCP_INSTRUCTIONS = `Tools provided by the container this session runs in, on the owner's NAS.
 - notify: send the owner a Telegram message. Use it when the owner asked to be told about something (a result, a finished long task, a failure in something they rely on). Don't use it for progress updates or debugging, and don't send the same message twice.
 - get_config / list_config: read values from the owner's central config (agent.env). Use these for URLs, account names and other settings instead of asking the owner or hardcoding values. If a needed key is missing, tell the owner the exact key name to add; never invent a value. Bot and GitHub tokens are never returned.
-Programs you write in /workspace can't use these MCP tools: they call the same service over HTTP at $AGENT_TOOLS_URL (see the container instructions).`;
+Every tool is also a REST endpoint at $AGENT_TOOLS_URL, described by $AGENT_TOOLS_URL/openapi.json. Programs you write in /workspace can't use MCP, so they must call those endpoints instead.`;
 
-const MCP_TOOLS = [
-  {
-    name: "notify",
-    description: "Send a Telegram message to the owner's phone. For results or events the owner asked to hear about, not progress or debugging. At most 20 a minute.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "The message" },
-        title: { type: "string", description: "Optional first line, such as the program or task name" },
-      },
-      required: ["text"],
-    },
-  },
-  {
-    name: "get_config",
-    description: "Read one value from the owner's central config (agent.env). If the key doesn't exist, tell the owner which key to add instead of guessing a value.",
-    inputSchema: {
-      type: "object",
-      properties: { key: { type: "string", description: "Key name, e.g. EXAMPLE_API_URL" } },
-      required: ["key"],
-    },
-  },
-  {
-    name: "list_config",
-    description: "List the key names in the owner's central config (agent.env). Read values with get_config.",
-    inputSchema: { type: "object", properties: {} },
-  },
-];
+const mcpTools = () =>
+  API.filter((r) => r.mcp).map((r) => ({
+    name: r.id,
+    description: r.mcp.description,
+    inputSchema: { type: "object", properties: r.input ?? {}, required: r.required ?? [] },
+  }));
 
-async function mcpCallTool(name, args = {}) {
-  let result;
-  if (name === "notify") result = await toolsNotify(JSON.stringify(args));
-  else if (name === "get_config") result = args.key ? toolsConfig(String(args.key)) : [400, { ok: false, error: "key is required" }];
-  else if (name === "list_config") result = toolsConfig();
-  else return null;
-
-  const [, body] = result;
-  const text = !body.ok ? body.error
-    : name === "notify" ? `Sent to ${body.sent} Telegram user(s).`
-    : name === "get_config" ? body.value
-    : body.keys.join("\n") || "(agent.env has no keys you can read)";
-  return { content: [{ type: "text", text }], isError: !body.ok };
+async function mcpCallTool(name, args) {
+  const route = API.find((r) => r.mcp && r.id === name);
+  if (!route) return null;
+  const [, body] = await callRoute(route, args && typeof args === "object" ? args : {});
+  return { content: [{ type: "text", text: body.ok ? route.mcp.result(body) : body.error }], isError: !body.ok };
 }
 
 async function handleMcp(raw) {
@@ -591,7 +690,7 @@ async function handleMcp(raw) {
     case "ping":
       return result({});
     case "tools/list":
-      return result({ tools: MCP_TOOLS });
+      return result({ tools: mcpTools() });
     case "tools/call": {
       const called = await mcpCallTool(params?.name, params?.arguments);
       return called ? result(called) : [200, rpcError(id, -32602, `Unknown tool: ${params?.name}`)];
@@ -615,18 +714,34 @@ async function registerMcpServer() {
   }
 }
 
+// ---------- HTTP server ----------
+
 async function handleTools(req) {
-  const url = new URL(req.url, "http://localhost");
-  if (url.pathname === "/mcp") {
+  const { pathname } = new URL(req.url, "http://localhost");
+
+  if (pathname === "/mcp") {
     return req.method === "POST"
       ? handleMcp(await readBody(req))
       : [405, { ok: false, error: "MCP clients POST JSON-RPC to /mcp" }];
   }
-  if (req.method === "GET" && url.pathname === "/health") return [200, { ok: true, telegram }];
-  if (req.method === "POST" && url.pathname === "/notify") return toolsNotify(await readBody(req));
-  const m = url.pathname.match(/^\/config(?:\/([^/]+))?\/?$/);
-  if (req.method === "GET" && m) return toolsConfig(m[1] && decodeURIComponent(m[1]));
-  return [404, { ok: false, error: "Endpoints: GET /health, POST /notify, GET /config, GET /config/<KEY>" }];
+  if (req.method === "GET" && pathname === "/") return [200, apiIndex()];
+  if (req.method === "GET" && pathname === "/openapi.json") return [200, openApiSpec()];
+
+  for (const route of API) {
+    const m = route.method === req.method && pathname.match(route.pattern);
+    if (!m) continue;
+    let input = {};
+    if (req.method === "POST") {
+      const raw = await readBody(req);
+      try { input = raw ? JSON.parse(raw) : {}; } catch { input = null; }
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        return [400, { ok: false, error: "The body must be a JSON object" }];
+      }
+    }
+    route.params.forEach((name, i) => { input[name] = decodeURIComponent(m[i + 1]); });
+    return callRoute(route, input);
+  }
+  return [404, { ok: false, error: "Unknown endpoint. GET / lists the endpoints, GET /openapi.json describes them." }];
 }
 
 function startToolsServer() {
