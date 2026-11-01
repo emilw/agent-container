@@ -83,7 +83,11 @@ Rules:
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
 
 ## Changing the tools service itself
-If you're working on this container's own code (`agent.mjs` in the agent-container repo), follow the COMPATIBILITY RULES next to the API registry in `agent.mjs`: existing endpoints and MCP tools are only ever extended; a breaking change becomes a new `/v2/...` entry and the old one is marked deprecated. CI checks this against `api/openapi.baseline.json`. Check `GET /usage` before deprecating anything.
+If you're working on this container's own code (`agent.mjs` in the agent-container repo), follow the COMPATIBILITY RULES next to the API registry in `agent.mjs`: existing endpoints and MCP tools are only ever extended, never broken.
+
+- Never make a breaking change on your own: removing or renaming an endpoint, tool, input or response field, changing a type, or making an optional input required. If a change would do that, stop and ask the owner whether it's intended, and suggest adding a `/v2/...` version next to the old one instead.
+- Before deprecating or removing anything, check `GET /usage` to see who still calls it, and tell the owner.
+- CI compares the API with main's on every pull request and fails on a breaking change.
 
 ## Scheduled jobs
 When something should run regularly (a daily script, a check every 15 minutes), schedule it with `add_schedule` (or `POST /schedules`). Never use crontab, systemd timers, `at` or a sleep loop: they don't survive container updates, and nobody would see their failures.

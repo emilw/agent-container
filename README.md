@@ -199,17 +199,10 @@ exactly as before:
   `deprecated: "use email_v2 instead"`. Paths without a prefix are v1.
 - **Removing an old version:** only once `GET /usage` shows nothing calls it any more.
 
-[scripts/check-api.mjs](scripts/check-api.mjs) enforces this. CI starts the image, fetches
-`/openapi.json` and compares it with [api/openapi.baseline.json](api/openapi.baseline.json):
-any breaking change fails the build before anything is published. After adding endpoints,
-record them in the baseline:
-
-```bash
-docker build -t agent-container:dev .
-docker run -d --name api agent-container:dev && sleep 5
-docker exec api curl -s http://127.0.0.1:7777/openapi.json > openapi.json && docker rm -f api
-node scripts/check-api.mjs openapi.json --update
-```
+On every pull request, CI compares the new image's `/openapi.json` with the one served by
+the image published from `main`, using [scripts/check-api.mjs](scripts/check-api.mjs). A
+breaking change fails the check. If the break is intended, for example to finally remove an
+old version, merge anyway.
 
 ### Usage: who calls what
 
@@ -239,7 +232,7 @@ Every feature is one entry in the `API` list in [agent.mjs](agent.mjs): its REST
 inputs and handler, plus an `mcp` block if Claude should get it as a tool. The REST
 routing, the MCP tool list and `/openapi.json` are generated from that list, so every
 MCP tool always has a matching REST endpoint, and `agent-tools <id> key=value` calls it.
-Mention the feature in [AGENTS.MD](AGENTS.MD), and update the API baseline (see above).
+Mention the feature in [AGENTS.MD](AGENTS.MD).
 
 ### MCP for Claude sessions
 

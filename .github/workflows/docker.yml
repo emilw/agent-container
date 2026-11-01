@@ -28,26 +28,36 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # Build the image for this runner first and check that the tools API it serves is
-      # still compatible with api/openapi.baseline.json, before anything is published.
+      # On pull requests: check that the tools API is still compatible with main's, which is
+      # the image published from main.
       - name: Build an image to test
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
           load: true
-          tags: agent-container:ci
+          tags: agent-container:pr
           build-args: CLAUDE_CODE_VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
 
-      - name: Check the tools API stays backwards compatible
+      - name: Check the tools API stays backwards compatible with main
+        if: github.event_name == 'pull_request'
         run: |
-          docker run -d --name api-check agent-container:ci
-          for i in $(seq 30); do
-            docker exec api-check curl -sf http://127.0.0.1:7777/openapi.json > openapi.json && break
-            sleep 2
-          done
-          docker rm -f api-check >/dev/null
-          node scripts/check-api.mjs openapi.json
+          openapi() {
+            docker run -d --name api-check "$1" >/dev/null
+            for i in $(seq 30); do
+              docker exec api-check curl -sf http://127.0.0.1:7777/openapi.json > "$2" && break
+              sleep 2
+            done
+            docker rm -f api-check >/dev/null
+            test -s "$2"
+          }
+          openapi agent-container:pr pr.json
+          if ! openapi "${{ env.IMAGE }}:latest" main.json; then
+            echo "main's image doesn't serve /openapi.json yet; nothing to compare with."
+            exit 0
+          fi
+          node scripts/check-api.mjs main.json pr.json
 
       - if: github.event_name != 'pull_request'
         uses: docker/login-action@v3

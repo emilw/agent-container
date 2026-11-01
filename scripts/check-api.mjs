@@ -1,28 +1,17 @@
 #!/usr/bin/env node
-// Checks that the tools API stays backwards compatible: everything in the baseline
-// (api/openapi.baseline.json) must still exist, accept the same input and return the same
-// fields. Additions are fine. See the COMPATIBILITY RULES next to the registry in agent.mjs.
+// Checks that the tools API stays backwards compatible: everything in main's API must still
+// exist, accept the same input and return the same fields. Additions are fine. See the
+// COMPATIBILITY RULES next to the registry in agent.mjs.
 //
-//   node scripts/check-api.mjs openapi.json            check a fetched /openapi.json
-//   node scripts/check-api.mjs openapi.json --update   check, then record it as the new baseline
-//   node scripts/check-api.mjs openapi.json --update --allow-breaking
-//       record it even though it breaks the baseline: only to finally remove an endpoint
-//       that GET /usage shows nobody calls any more.
-import { readFileSync, writeFileSync } from "node:fs";
+//   node scripts/check-api.mjs main-openapi.json pr-openapi.json
+import { readFileSync } from "node:fs";
 
-const args = process.argv.slice(2);
-const update = args.includes("--update");
-const allowBreaking = args.includes("--allow-breaking");
-const [currentPath] = args.filter((a) => !a.startsWith("--"));
-const baselinePath = new URL("../api/openapi.baseline.json", import.meta.url);
-if (!currentPath) {
-  console.error("Usage: node scripts/check-api.mjs <openapi.json> [--update [--allow-breaking]]");
+const [beforePath, afterPath] = process.argv.slice(2);
+if (!beforePath || !afterPath) {
+  console.error("Usage: node scripts/check-api.mjs <main openapi.json> <new openapi.json>");
   process.exit(2);
 }
-
-const current = JSON.parse(readFileSync(currentPath, "utf8"));
-let baseline = null;
-try { baseline = JSON.parse(readFileSync(baselinePath, "utf8")); } catch {}
+const load = (p) => JSON.parse(readFileSync(p, "utf8"));
 
 const operations = (spec) => Object.fromEntries(
   Object.entries(spec?.paths ?? {}).flatMap(([path, ops]) =>
@@ -32,7 +21,6 @@ const body = (op) => op.requestBody?.content?.["application/json"]?.schema ?? { 
 const response = (op) => op.responses?.["200"]?.content?.["application/json"]?.schema?.properties ?? {};
 
 const problems = [];
-const added = [];
 
 function compareSchema(where, before, after) {
   if (before.type !== after.type) problems.push(`${where}: type changed from ${before.type} to ${after.type}`);
@@ -42,8 +30,8 @@ function compareSchema(where, before, after) {
   if (!before.enum && after.enum) problems.push(`${where}: now only accepts ${after.enum.join(", ")}`);
 }
 
-const before = operations(baseline);
-const now = operations(current);
+const before = operations(load(beforePath));
+const now = operations(load(afterPath));
 
 for (const [key, old] of Object.entries(before)) {
   const op = now[key];
@@ -87,20 +75,12 @@ for (const [key, old] of Object.entries(before)) {
     compareSchema(`${name} response field "${field}"`, schema, newResponse[field]);
   }
 }
-for (const key of Object.keys(now)) if (!before[key]) added.push(`${key} (${now[key].operationId})`);
 
-if (!baseline) console.log(`No baseline at ${baselinePath.pathname} yet.`);
-if (added.length) console.log(`New since the baseline:\n  ${added.join("\n  ")}`);
+const added = Object.keys(now).filter((k) => !before[k]).map((k) => `${k} (${now[k].operationId})`);
+if (added.length) console.log(`New compared with main:\n  ${added.join("\n  ")}`);
 if (problems.length) {
-  console.error(`\nBreaking changes to the tools API:\n  ${problems.join("\n  ")}`);
+  console.error(`\nBreaking changes to the tools API compared with main:\n  ${problems.join("\n  ")}`);
   console.error("\nExisting endpoints and MCP tools must keep working. Extend them compatibly, or add a /v2/ version (see agent.mjs).");
+  process.exit(1);
 }
-
-if (update && (!problems.length || allowBreaking)) {
-  writeFileSync(baselinePath, JSON.stringify(current, null, 2) + "\n");
-  console.log(`\nBaseline updated: ${baselinePath.pathname}`);
-} else if (!problems.length) {
-  console.log(baseline ? "\nThe tools API is compatible with the baseline." : "\nRun with --update to record a baseline.");
-}
-if (problems.length && !(update && allowBreaking)) process.exit(1);
-if (!baseline && !update) process.exit(1);
+console.log("\nThe tools API is compatible with main.");

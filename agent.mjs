@@ -891,8 +891,8 @@ function toolsGetUsage({ operation }) {
 // replaces it.
 //
 // COMPATIBILITY RULES. Programs and agents depend on these endpoints and tools, so an
-// existing one must never break. scripts/check-api.mjs enforces this in CI against
-// api/openapi.baseline.json.
+// existing one must never break. On pull requests, CI compares /openapi.json with main's
+// using scripts/check-api.mjs.
 // - Allowed: new endpoints, new optional inputs, new response fields, new enum values,
 //   accepting input that used to be rejected.
 // - Not allowed on an existing endpoint or tool: removing or renaming it, its inputs or its
@@ -900,7 +900,7 @@ function toolsGetUsage({ operation }) {
 //   values; changing what a field means.
 // - For a breaking change, add a new entry under /v2/... (id e.g. "email_v2") next to the
 //   old one, and mark the old one deprecated. GET /usage shows who still calls it; remove it
-//   only once nothing does, and only as a deliberate baseline update.
+//   only once nothing does, and only when the owner has confirmed it.
 const API = [
   {
     id: "health",
