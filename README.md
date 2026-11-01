@@ -63,10 +63,11 @@ The project's `AGENTS.md` is its memory. Claude writes it before anything else a
 current, so a later session, or another agent, picks up where the last one stopped. To come
 back, say "let's continue on price-watcher" and Claude reads that file first.
 
-Inside the folder Claude can write code, run it, and use the container's tools: Telegram
-messages, email and values from `agent.env` (see [Tools API](#tools-api)). It also runs
-`git init`, and once there's something worth keeping, it can create a private GitHub repo
-and push (see [GitHub](#github)).
+Projects are built in Node.js unless you ask for another language. Inside the folder Claude
+can write code, run it, and use the container's tools: Telegram messages, email, scheduled
+jobs and values from `agent.env` (see [Tools API](#tools-api)). It also runs `git init`, and
+once there's something worth keeping, it can create a private GitHub repo and push (see
+[GitHub](#github)).
 
 ```mermaid
 flowchart LR
@@ -133,21 +134,105 @@ Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777
   `MAIL_TO` when it leaves `to` out. Optionally, `MAIL_ALLOWED_TO` limits who apps can send to.
   Port 587 uses STARTTLS, 465 TLS.
 - `GET /config/<KEY>` returns a value from `config/agent.env`; `GET /config` lists the keys
+- `/schedules` runs commands on a schedule, and `/logs` serves the logs (see below)
 
 Every key in `agent.env` is served except `TELEGRAM_TOKEN`, `GH_TOKEN` and `SMTP_PASS`. Value changes apply
-immediately; the container's own settings still need a restart. Shell scripts can use `agent-tools notify "..."` and
-`agent-tools config KEY`. [AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
+immediately; the container's own settings still need a restart.
+
+Shell scripts use `agent-tools`: `agent-tools notify "..."`, `agent-tools email ...`,
+`agent-tools config KEY`, `agent-tools logs [NAME]`, and any endpoint by its name, e.g.
+`agent-tools run_schedule name=news`. `agent-tools api` lists them.
+[AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
+
+### Scheduled jobs
+
+Jobs run on a cron schedule in the container's time zone (`TZ` in `agent.env`, default
+Europe/Stockholm), using [supercronic](https://github.com/aptible/supercronic). They're kept
+in `config/schedules.json`, so they survive restarts and image updates. Claude sets them up
+with the MCP tools, or you can call the API yourself:
+
+```bash
+agent-tools add_schedule name=mynewsfeed cron="0 7 * * *" command=./run.sh cwd=/workspace/myNewsFeed
+agent-tools run_schedule name=mynewsfeed     # run it now, to test
+agent-tools list_schedules                   # last run, exit code, duration
+agent-tools remove_schedule name=mynewsfeed
+```
+
+- **Notifications:** you get a Telegram message when a run fails, with its last output.
+  Set `notify=always` or `notify=never` per job.
+- **Overlap:** a run is skipped while the previous one is still going.
+- **Timeouts:** runs are stopped after `timeoutMinutes` (default 60).
+- **Restarts:** a run interrupted by a container restart is marked as interrupted.
+
+### Logs
+
+`config/logs/` holds `agent.log` (logins, Remote Control, the scheduler) and one log per job,
+`<job>.log`, each with a start and finish line per run. Logs over 5 MB (agent) or 2 MB (jobs)
+are moved to `.log.1`. Read them through the API:
+
+```bash
+agent-tools logs                      # list
+agent-tools logs mynewsfeed           # last 100 lines of a job's log
+agent-tools logs agent --lines 300    # the container's own log
+```
+
+The same is `GET /logs` and `GET /logs/<name>?lines=N`, and the MCP tools `list_logs` and
+`get_log`, so Claude can troubleshoot a failing job by itself.
 
 `GET /openapi.json` describes every endpoint (OpenAPI 3.1), `GET /` lists them, and
 `agent-tools api` prints the list.
+
+### API rules: extend, never break
+
+Apps and agents build on this API, so an endpoint or MCP tool that exists must keep working
+exactly as before:
+
+- **Allowed:** new endpoints, new optional inputs, new response fields, new enum values.
+- **Not allowed on an existing endpoint:**
+  - removing or renaming it, one of its inputs, or a response field
+  - changing a type
+  - making an optional input required
+  - removing an enum value
+  - changing what a field means
+- **Breaking changes get a new version.** Add the new behaviour as a `/v2/...` entry (e.g.
+  `POST /v2/email`, MCP tool `email_v2`) next to the old one, and mark the old one
+  `deprecated: "use email_v2 instead"`. Paths without a prefix are v1.
+- **Removing an old version:** only once `GET /usage` shows nothing calls it any more.
+
+On every pull request, CI compares the new image's `/openapi.json` with the one served by
+the image published from `main`, using [scripts/check-api.mjs](scripts/check-api.mjs). A
+breaking change fails the check. If the break is intended, for example to finally remove an
+old version, merge anyway.
+
+### Usage: who calls what
+
+Every call through REST or MCP is recorded with its caller, so before deprecating something
+you know who depends on it. The caller is identified automatically from the process on the
+other end of the localhost connection:
+- its project folder in `/workspace`
+- its program, e.g. `node app.mjs` or `claude`
+- its scheduled job, if any
+
+Apps can also name themselves with an `X-Agent-Client` header, or with `AGENT_CLIENT` for
+`agent-tools`.
+
+```bash
+agent-tools get_usage                   # every operation, with callers, counts and last use
+agent-tools get_usage operation=email   # one operation
+agent-tools logs usage                  # the raw call log
+```
+
+Totals are kept in `config/state/usage.json`. Each call is also appended to
+`config/logs/usage.log`, which records only the caller's program and first argument, never
+its other arguments or the request's contents.
 
 ### Adding a feature
 
 Every feature is one entry in the `API` list in [agent.mjs](agent.mjs): its REST route,
 inputs and handler, plus an `mcp` block if Claude should get it as a tool. The REST
 routing, the MCP tool list and `/openapi.json` are generated from that list, so every
-MCP tool always has a matching REST endpoint. Add a matching `agent-tools` command and
-mention the feature in [AGENTS.MD](AGENTS.MD).
+MCP tool always has a matching REST endpoint, and `agent-tools <id> key=value` calls it.
+Mention the feature in [AGENTS.MD](AGENTS.MD).
 
 ### MCP for Claude sessions
 

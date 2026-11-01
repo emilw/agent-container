@@ -4,8 +4,12 @@
 // - runs `claude remote-control` in tmux, forwarding its y/n prompts and session link
 // - serves a tools API on localhost for programs in /workspace (Telegram notify, config values),
 //   and the same tools as an MCP server for Claude sessions
-import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import {
+  accessSync, appendFileSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync,
+  readdirSync, readlinkSync, renameSync, closeSync, statSync, unlinkSync, writeFileSync,
+} from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { addr, sendMail } from "./smtp.mjs";
@@ -18,8 +22,19 @@ const HIDDEN_CONFIG_KEYS = new Set(["TELEGRAM_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"
 const TMUX_CONF = "/opt/agent/tmux.conf";
 const LOGIN_REPLY_MINUTES = 30;
 const HOUR = 3600_000;
+const LOG_DIR = `${CONFIG_DIR}/logs`;
+const AGENT_LOG = `${LOG_DIR}/agent.log`;
+const AGENT_LOG_MAX_BYTES = 5 * 1024 * 1024;
 
-const log = (...args) => console.log("[agent]", ...args);
+// Logs to the container output and to /config/logs/agent.log, which GET /logs/agent serves.
+function log(...args) {
+  const line = args.join(" ");
+  console.log("[agent]", line);
+  try {
+    if (existsSync(AGENT_LOG) && statSync(AGENT_LOG).size > AGENT_LOG_MAX_BYTES) renameSync(AGENT_LOG, `${AGENT_LOG}.1`);
+    appendFileSync(AGENT_LOG, `${new Date().toLocaleString("sv-SE")} ${line}\n`);
+  } catch {} // before /config/logs exists, or if /config isn't writable
+}
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------- config ----------
@@ -32,6 +47,8 @@ try {
 }
 
 mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
+mkdirSync(LOG_DIR, { recursive: true });
+mkdirSync(`${CONFIG_DIR}/state`, { recursive: true }); // job states and usage totals
 if (!existsSync(ENV_FILE)) {
   copyFileSync("/opt/agent/agent.env.example", ENV_FILE);
   log(`Created ${ENV_FILE}. Fill in TELEGRAM_TOKEN and ALLOWED_USER_IDS, then restart the container.`);
@@ -52,6 +69,7 @@ function parseEnvFile(path) {
 }
 
 Object.assign(process.env, parseEnvFile(ENV_FILE));
+process.env.TZ ||= "Europe/Stockholm"; // schedules and log timestamps use this
 
 const cfg = {
   token: process.env.TELEGRAM_TOKEN || "",
@@ -560,10 +578,329 @@ async function toolsEmail({ subject, text, html, to }) {
   return [200, { ok: true, to: recipients }];
 }
 
+// ---------- schedules ----------
+// Jobs live in /config/schedules.json. The agent writes a crontab from it that runs
+// `agent-run <name>` for each job, and supercronic (started below) runs that crontab.
+// agent-run writes /config/logs/<name>.log and /config/state/<name>.json.
+
+const SCHEDULES_FILE = `${CONFIG_DIR}/schedules.json`;
+const STATE_DIR = `${CONFIG_DIR}/state`;
+const CRONTAB = "/tmp/agent-crontab";
+const WORKSPACE_DIR = "/workspace";
+const JOB_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+// Five cron fields, or a shorthand. Supercronic also accepts six or seven fields (seconds,
+// years), but then a field can't be told apart from the command, so only five are allowed.
+const CRON = /^(@(yearly|annually|monthly|weekly|daily|midnight|hourly)|\S+( \S+){4})$/;
+
+let supercronic = null;
+let stopping = false;
+
+function readJobs() {
+  try { return JSON.parse(readFileSync(SCHEDULES_FILE, "utf8")).jobs ?? []; } catch { return []; }
+}
+
+function writeJobs(jobs) {
+  writeFileSync(`${SCHEDULES_FILE}.tmp`, JSON.stringify({ jobs }, null, 2));
+  renameSync(`${SCHEDULES_FILE}.tmp`, SCHEDULES_FILE);
+  writeCrontab(jobs);
+}
+
+function writeCrontab(jobs = readJobs()) {
+  const lines = jobs.map((j) => `${j.cron} /usr/local/bin/agent-run ${j.name}`);
+  writeFileSync(CRONTAB, `# Generated from ${SCHEDULES_FILE} by the agent. Don't edit.\n${lines.join("\n")}\n`);
+  try { supercronic?.kill("SIGUSR2"); } catch {} // supercronic re-reads its crontab on SIGUSR2
+}
+
+function jobState(name) {
+  try { return JSON.parse(readFileSync(`${STATE_DIR}/${name}.json`, "utf8")); } catch { return {}; }
+}
+
+function jobRunning(name) {
+  const s = jobState(name);
+  if (!s.running || !s.pid) return false;
+  try { process.kill(s.pid, 0); return true; } catch { return false; }
+}
+
+// No job can be running when the container starts; clear what an interrupted run left behind,
+// so its old pid isn't mistaken for a running job.
+function clearStaleJobStates() {
+  for (const job of readJobs()) {
+    const s = jobState(job.name);
+    if (!s.running) continue;
+    writeFileSync(`${STATE_DIR}/${job.name}.json`, JSON.stringify({ ...s, running: false, pid: null, lastInterrupted: true }, null, 2));
+    log(`Job ${job.name} was interrupted by a container restart.`);
+  }
+}
+
+// Runs supercronic for the life of the container, restarting it if it stops.
+function startScheduler() {
+  writeCrontab();
+  supercronic = spawn("supercronic", ["-quiet", CRONTAB], { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+  const forward = (chunk) => chunk.toString().split("\n").filter(Boolean).forEach((l) => log(`[cron] ${l}`));
+  supercronic.stdout.on("data", forward);
+  supercronic.stderr.on("data", forward);
+  supercronic.on("exit", (code) => {
+    supercronic = null;
+    if (stopping) return;
+    log(`supercronic stopped (code ${code}); restarting in 10 seconds.`);
+    setTimeout(startScheduler, 10_000);
+  });
+  log(`Scheduler started with ${readJobs().length} job(s), time zone ${process.env.TZ}.`);
+}
+
+async function cronIsValid(cron) {
+  const file = `/tmp/agent-crontab-test-${process.pid}`;
+  writeFileSync(file, `${cron} true\n`);
+  try {
+    await execFileAsync("supercronic", ["-test", file], { timeout: 10_000 });
+    return null;
+  } catch (e) {
+    const out = (e.stderr || e.stdout || e.message).toString();
+    return out.match(/msg="([^"]*)"/)?.[1].replace(/ \(use -debug.*$/, "") ?? out.trim().split("\n").pop();
+  } finally {
+    try { unlinkSync(file); } catch {}
+  }
+}
+
+const describeJob = (j) => ({ ...j, ...jobState(j.name), running: jobRunning(j.name), log: `/logs/${j.name}` });
+
+function toolsListSchedules() {
+  return [200, { ok: true, timeZone: process.env.TZ, jobs: readJobs().map(describeJob) }];
+}
+
+async function toolsAddSchedule({ name, cron, command, cwd = WORKSPACE_DIR, notify = "failure", timeoutMinutes = 60 }) {
+  if (!JOB_NAME.test(name) || name === "agent") {
+    return [400, { ok: false, error: "name must be lowercase letters, digits and hyphens (max 40), and not \"agent\"" }];
+  }
+  cron = cron.trim().replace(/\s+/g, " ");
+  if (!CRON.test(cron)) {
+    return [400, { ok: false, error: 'cron must have five fields, e.g. "0 7 * * *" (07:00 every day) or "*/15 * * * *" (every 15 minutes), or be @daily, @hourly and so on' }];
+  }
+  const cronError = await cronIsValid(cron);
+  if (cronError) return [400, { ok: false, error: `Invalid cron "${cron}": ${cronError}` }];
+
+  const dir = resolvePath(WORKSPACE_DIR, cwd);
+  if (dir !== WORKSPACE_DIR && !dir.startsWith(`${WORKSPACE_DIR}/`)) {
+    return [400, { ok: false, error: `cwd must be inside ${WORKSPACE_DIR}` }];
+  }
+  let isDir = false;
+  try { isDir = statSync(dir).isDirectory(); } catch {}
+  if (!isDir) return [400, { ok: false, error: `cwd ${dir} doesn't exist` }];
+  if (timeoutMinutes < 1 || timeoutMinutes > 24 * 60) {
+    return [400, { ok: false, error: "timeoutMinutes must be between 1 and 1440" }];
+  }
+
+  const jobs = readJobs();
+  const existing = jobs.find((j) => j.name === name);
+  const job = {
+    name, cron, command, cwd: dir, notify, timeoutMinutes,
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  writeJobs([...jobs.filter((j) => j.name !== name), job]);
+  log(`Schedule ${existing ? "updated" : "added"}: ${name} (${cron}) runs "${command}" in ${dir}`);
+  return [200, { ok: true, updated: Boolean(existing), job: describeJob(job) }];
+}
+
+function toolsRemoveSchedule({ name }) {
+  const jobs = readJobs();
+  if (!jobs.some((j) => j.name === name)) return [404, { ok: false, error: `No scheduled job named ${name}` }];
+  writeJobs(jobs.filter((j) => j.name !== name));
+  try { unlinkSync(`${STATE_DIR}/${name}.json`); } catch {}
+  log(`Schedule removed: ${name}`);
+  return [200, { ok: true, removed: name }];
+}
+
+function toolsRunSchedule({ name }) {
+  if (!readJobs().some((j) => j.name === name)) return [404, { ok: false, error: `No scheduled job named ${name}` }];
+  if (jobRunning(name)) return [409, { ok: false, error: `${name} is already running` }];
+  const child = spawn("/usr/local/bin/agent-run", [name], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, AGENT_RUN_TRIGGER: "manual" },
+  });
+  child.unref();
+  log(`Schedule ${name} started manually.`);
+  return [200, { ok: true, started: name, log: `/logs/${name}` }];
+}
+
+// ---------- logs ----------
+
+const LOG_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+function toolsListLogs() {
+  const logs = readdirSync(LOG_DIR)
+    .filter((f) => f.endsWith(".log"))
+    .map((f) => {
+      const s = statSync(`${LOG_DIR}/${f}`);
+      return { name: f.slice(0, -4), bytes: s.size, modified: s.mtime.toISOString() };
+    })
+    .sort((a, b) => b.modified.localeCompare(a.modified));
+  return [200, { ok: true, logs }];
+}
+
+// Reads only the end of the file, so large logs stay cheap.
+function tailFile(path, lines) {
+  const size = statSync(path).size;
+  const bytes = Math.min(size, Math.max(64 * 1024, lines * 400));
+  const buf = Buffer.alloc(bytes);
+  const fd = openSync(path, "r");
+  try { readSync(fd, buf, 0, bytes, size - bytes); } finally { closeSync(fd); }
+  const all = buf.toString("utf8").split("\n");
+  if (bytes < size) all.shift(); // the first line is probably cut off
+  if (all.at(-1) === "") all.pop();
+  return all.slice(-lines);
+}
+
+function toolsGetLog({ name, lines = 100 }) {
+  if (!LOG_NAME.test(name)) return [400, { ok: false, error: "name must be a log name from GET /logs" }];
+  if (lines < 1 || lines > 5000) return [400, { ok: false, error: "lines must be between 1 and 5000" }];
+  const path = `${LOG_DIR}/${name}.log`;
+  if (!existsSync(path)) return [404, { ok: false, error: `No log named ${name}. GET /logs lists them.` }];
+  const text = tailFile(path, lines);
+  return [200, { ok: true, name, lines: text.length, text: text.join("\n") }];
+}
+
+// ---------- usage ----------
+// Every API and MCP call is recorded with who made it, so before an endpoint is deprecated
+// we know who still uses it. Callers are identified two ways: an optional X-Agent-Client
+// header naming the app, and automatically through /proc: the process on the other end of
+// the localhost connection, its folder (so its project in /workspace) and its scheduled job.
+// Each call is appended to /config/logs/usage.log; per-caller totals are kept for good in
+// /config/state/usage.json.
+
+const USAGE_LOG = `${LOG_DIR}/usage.log`;
+const USAGE_FILE = `${STATE_DIR}/usage.json`;
+let usage = null; // { "<operation>": { "<caller key>": { ...caller, count, first, last } } }
+let usageSaveTimer = null;
+
+function describeProcess(pid) {
+  const read = (f) => { try { return readFileSync(`/proc/${pid}/${f}`, "utf8"); } catch { return ""; } };
+  let cwd = null;
+  try { cwd = readlinkSync(`/proc/${pid}/cwd`); } catch {}
+  const argv = read("cmdline").split("\0").filter(Boolean);
+  // "node /usr/local/bin/agent-tools ..." reads better as "agent-tools ..."
+  const shown = argv[0]?.endsWith("node") && argv[1] ? argv.slice(1) : argv;
+  const program = shown[0]?.split("/").pop() ?? read("comm").trim();
+  const job = read("environ").split("\0").find((v) => v.startsWith("AGENT_JOB_NAME="))?.slice(15) || null;
+  const project = cwd?.startsWith(`${WORKSPACE_DIR}/`) ? cwd.slice(WORKSPACE_DIR.length + 1).split("/")[0] : null;
+  // Only the program and its first argument (e.g. "node app.mjs"): later arguments can hold
+  // message text or secrets, which don't belong in the usage log.
+  return { pid: Number(pid), program, command: [program, shown[1]].filter(Boolean).join(" ").slice(0, 120), cwd, project, job };
+}
+
+// Finds the process that owns the client end of a localhost connection.
+function callerProcess(socket) {
+  try {
+    const local = `0100007F:${socket.remotePort.toString(16).toUpperCase().padStart(4, "0")}`;
+    const row = readFileSync("/proc/net/tcp", "utf8").split("\n").map((l) => l.trim().split(/\s+/)).find((f) => f[1] === local);
+    if (!row) return null;
+    const target = `socket:[${row[9]}]`;
+    for (const pid of readdirSync("/proc")) {
+      if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+      let fds;
+      try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+      for (const fd of fds) {
+        try { if (readlinkSync(`/proc/${pid}/fd/${fd}`) === target) return describeProcess(pid); } catch {}
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function identifyCaller(req) {
+  const header = req.headers["x-agent-client"];
+  const client = typeof header === "string" && header.trim() ? header.trim().slice(0, 80) : null;
+  const proc = callerProcess(req.socket);
+  return {
+    client,
+    job: proc?.job ?? null,
+    project: proc?.project ?? null,
+    program: proc?.program ?? "unknown",
+    command: proc?.command ?? null,
+    cwd: proc?.cwd ?? null,
+  };
+}
+
+const callerLabel = (c) =>
+  [c.client, c.job && `job ${c.job}`, c.project ?? c.cwd, c.program].filter(Boolean).join(" · ");
+
+function loadUsage() {
+  if (usage) return usage;
+  try { usage = JSON.parse(readFileSync(USAGE_FILE, "utf8")); } catch { usage = {}; }
+  return usage;
+}
+
+function recordUsage(route, via, caller, status) {
+  const now = new Date().toISOString();
+  const operation = route.id;
+  try {
+    if (existsSync(USAGE_LOG) && statSync(USAGE_LOG).size > AGENT_LOG_MAX_BYTES) renameSync(USAGE_LOG, `${USAGE_LOG}.1`);
+    appendFileSync(USAGE_LOG, JSON.stringify({ time: now, operation, version: route.version, via, status, ...caller }) + "\n");
+  } catch {}
+
+  const key = [caller.client, caller.job, caller.project ?? caller.cwd, caller.program, via].join("|");
+  const byCaller = (loadUsage()[operation] ??= {});
+  const entry = (byCaller[key] ??= {
+    client: caller.client, job: caller.job, project: caller.project, cwd: caller.cwd, program: caller.program, via, count: 0, first: now,
+  });
+  entry.count++;
+  entry.last = now;
+  entry.lastCommand = caller.command;
+  entry.lastStatus = status;
+  clearTimeout(usageSaveTimer);
+  usageSaveTimer = setTimeout(saveUsage, 5_000);
+}
+
+function saveUsage() {
+  if (!usage) return;
+  try {
+    writeFileSync(`${USAGE_FILE}.tmp`, JSON.stringify(usage, null, 2));
+    renameSync(`${USAGE_FILE}.tmp`, USAGE_FILE);
+  } catch (e) {
+    log(`Could not save usage: ${e.message}`);
+  }
+}
+
+function toolsGetUsage({ operation }) {
+  const all = loadUsage();
+  const routes = API.filter((r) => !operation || r.id === operation);
+  if (operation && !routes.length) return [404, { ok: false, error: `No operation ${operation}. GET / lists them.` }];
+  const operations = routes.map((r) => {
+    const callers = Object.values(all[r.id] ?? {})
+      .map((c) => ({ caller: callerLabel(c), ...c }))
+      .sort((a, b) => b.last.localeCompare(a.last));
+    return {
+      operation: r.id,
+      method: r.method,
+      path: r.path,
+      version: r.version,
+      ...(r.deprecated && { deprecated: r.deprecated }),
+      calls: callers.reduce((n, c) => n + c.count, 0),
+      callers,
+    };
+  });
+  return [200, { ok: true, operations }];
+}
+
 // Each entry: id (OpenAPI operationId and MCP tool name), method, path ({name} segments are
 // path parameters), summary, input (JSON Schema properties; path parameters plus the JSON
-// body), required, response (properties returned besides ok), run(input) -> [status, body],
-// and mcp ({ description, result(body) -> text }) to also expose it as an MCP tool.
+// body for POST, or query parameters otherwise), required, response (properties returned
+// besides ok), run(input) -> [status, body], mcp ({ description, result(body) -> text }) to
+// also expose it as an MCP tool, and deprecated ("use <id> instead") once a newer version
+// replaces it.
+//
+// COMPATIBILITY RULES. Programs and agents depend on these endpoints and tools, so an
+// existing one must never break. On pull requests, CI compares /openapi.json with main's
+// using scripts/check-api.mjs.
+// - Allowed: new endpoints, new optional inputs, new response fields, new enum values,
+//   accepting input that used to be rejected.
+// - Not allowed on an existing endpoint or tool: removing or renaming it, its inputs or its
+//   response fields; changing a type; making an optional input required; removing enum
+//   values; changing what a field means.
+// - For a breaking change, add a new entry under /v2/... (id e.g. "email_v2") next to the
+//   old one, and mark the old one deprecated. GET /usage shows who still calls it; remove it
+//   only once nothing does, and only when the owner has confirmed it.
 const API = [
   {
     id: "health",
@@ -610,6 +947,109 @@ const API = [
     },
   },
   {
+    id: "list_schedules",
+    method: "GET",
+    path: "/schedules",
+    summary: "List scheduled jobs with their last run: start, end, exit code, duration, and whether one is running now.",
+    response: { timeZone: { type: "string" }, jobs: { type: "array", items: { type: "object" } } },
+    run: toolsListSchedules,
+    mcp: {
+      description: "List the container's scheduled jobs and how their last run went.",
+      result: (body) => JSON.stringify(body, null, 2),
+    },
+  },
+  {
+    id: "add_schedule",
+    method: "POST",
+    path: "/schedules",
+    summary: "Add a scheduled job, or replace the one with the same name. Runs `command` with sh in `cwd` on the `cron` schedule, in the container's time zone (TZ, default Europe/Stockholm).",
+    input: {
+      name: { type: "string", description: "Job name: lowercase letters, digits and hyphens, e.g. mynewsfeed-morning. Also the log name." },
+      cron: { type: "string", description: 'Five cron fields (minute hour day month weekday), e.g. "0 7 * * *" for 07:00 daily or "*/15 * * * *" for every 15 minutes, or @daily, @hourly' },
+      command: { type: "string", description: "Shell command, e.g. ./run.sh or node src/index.js" },
+      cwd: { type: "string", description: "Folder to run in, inside /workspace, e.g. /workspace/myNewsFeed. Default /workspace." },
+      notify: { type: "string", enum: ["failure", "always", "never"], description: "When to send a Telegram message about a run. Default failure." },
+      timeoutMinutes: { type: "integer", description: "Stop a run after this many minutes. Default 60." },
+    },
+    required: ["name", "cron", "command"],
+    response: { updated: { type: "boolean" }, job: { type: "object" } },
+    run: toolsAddSchedule,
+    mcp: {
+      description: "Schedule a command to run regularly in the container, e.g. a project's script every morning. Replaces an existing job with the same name. Test it with run_schedule and read the result with get_log.",
+      result: (body) => `${body.updated ? "Updated" : "Added"} ${body.job.name}: ${body.job.cron} runs "${body.job.command}" in ${body.job.cwd}.`,
+    },
+  },
+  {
+    id: "remove_schedule",
+    method: "DELETE",
+    path: "/schedules/{name}",
+    summary: "Remove a scheduled job. Its log is kept.",
+    input: { name: { type: "string", description: "Job name" } },
+    required: ["name"],
+    response: { removed: { type: "string" } },
+    run: toolsRemoveSchedule,
+    mcp: { description: "Remove a scheduled job. Its log is kept.", result: (body) => `Removed ${body.removed}.` },
+  },
+  {
+    id: "run_schedule",
+    method: "POST",
+    path: "/schedules/{name}/run",
+    summary: "Start a scheduled job now, in the background, e.g. to test it. 409 if it's already running. Follow it with GET /logs/{name}.",
+    input: { name: { type: "string", description: "Job name" } },
+    required: ["name"],
+    response: { started: { type: "string" }, log: { type: "string" } },
+    run: toolsRunSchedule,
+    mcp: {
+      description: "Run a scheduled job now, in the background, e.g. to test it. Check the result with get_log and list_schedules.",
+      result: (body) => `Started ${body.started}. Read its output with get_log name=${body.started}.`,
+    },
+  },
+  {
+    id: "list_logs",
+    method: "GET",
+    path: "/logs",
+    summary: "List the container's logs: agent (logins, Remote Control, scheduler) and one per scheduled job.",
+    response: { logs: { type: "array", items: { type: "object" } } },
+    run: toolsListLogs,
+    mcp: {
+      description: "List the container's logs: 'agent' (logins, Remote Control, scheduler) and one per scheduled job. Read one with get_log.",
+      result: (body) => body.logs.map((l) => `${l.name}  ${l.bytes} bytes  ${l.modified}`).join("\n") || "(no logs yet)",
+    },
+  },
+  {
+    id: "get_log",
+    method: "GET",
+    path: "/logs/{name}",
+    summary: "Read the end of a log, e.g. /logs/agent?lines=200 or a scheduled job's log by its name.",
+    input: {
+      name: { type: "string", description: "Log name from GET /logs: 'agent' or a job name" },
+      lines: { type: "integer", description: "How many lines from the end. Default 100, max 5000." },
+    },
+    required: ["name"],
+    response: { name: { type: "string" }, lines: { type: "integer" }, text: { type: "string" } },
+    run: toolsGetLog,
+    mcp: {
+      description: "Read the end of a container log, to troubleshoot a scheduled job (its name) or the container itself ('agent').",
+      result: (body) => body.text || "(the log is empty)",
+    },
+  },
+  {
+    id: "get_usage",
+    method: "GET",
+    path: "/usage",
+    summary: "Who calls which endpoint or MCP tool: per operation, each caller (client header, scheduled job, project folder, program) with call count and first and last use.",
+    input: { operation: { type: "string", description: "Only this operation, e.g. email. Default all." } },
+    response: { operations: { type: "array", items: { type: "object" } } },
+    run: toolsGetUsage,
+    mcp: {
+      description: "See which apps, jobs and agents call each tools-service endpoint, how often and when last. Use it before changing or deprecating an endpoint.",
+      result: (body) => body.operations
+        .map((o) => `${o.operation} (${o.method} ${o.path}${o.deprecated ? ", deprecated" : ""}): ${o.calls} call(s)` +
+          o.callers.map((c) => `\n  ${c.caller} via ${c.via}: ${c.count}, last ${c.last}`).join(""))
+        .join("\n"),
+    },
+  },
+  {
     id: "list_config",
     method: "GET",
     path: "/config",
@@ -640,10 +1080,19 @@ const API = [
 for (const route of API) {
   route.params = [...route.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
   route.pattern = new RegExp(`^${route.path.replace(/\{\w+\}/g, "([^/]+)")}/?$`);
+  // Paths without a version prefix are v1; a breaking change gets a new /v2/... entry.
+  route.version = Number(route.path.match(/^\/v(\d+)\//)?.[1] ?? 1);
 }
 
-// Shared by REST and MCP, so both get the same input checks.
-async function callRoute(route, input) {
+// Shared by REST and MCP, so both get the same input checks and usage records.
+// ctx: { via: "rest" | "mcp", caller } from identifyCaller.
+async function callRoute(route, input, ctx) {
+  const result = await validateAndRun(route, input);
+  if (ctx) recordUsage(route, ctx.via, ctx.caller, result[0]);
+  return result;
+}
+
+async function validateAndRun(route, input) {
   for (const name of route.required ?? []) {
     if (typeof input[name] !== "string" || !input[name].trim()) {
       return [400, { ok: false, error: `${name} is required` }];
@@ -652,6 +1101,15 @@ async function callRoute(route, input) {
   for (const [name, schema] of Object.entries(route.input ?? {})) {
     if (input[name] !== undefined && schema.type === "string" && typeof input[name] !== "string") {
       return [400, { ok: false, error: `${name} must be a string` }];
+    }
+    if (input[name] !== undefined && schema.type === "integer") {
+      // Query parameters arrive as strings; JSON bodies and MCP arguments as numbers.
+      const n = Number(input[name]);
+      if (input[name] === "" || !Number.isInteger(n)) return [400, { ok: false, error: `${name} must be a whole number` }];
+      input[name] = n;
+    }
+    if (input[name] !== undefined && schema.enum && !schema.enum.includes(input[name])) {
+      return [400, { ok: false, error: `${name} must be one of: ${schema.enum.join(", ")}` }];
     }
   }
   return route.run(input);
@@ -662,7 +1120,10 @@ function apiIndex() {
     ok: true,
     openapi: "/openapi.json",
     mcp: "/mcp",
-    endpoints: API.map((r) => ({ method: r.method, path: r.path, summary: r.summary, mcpTool: r.mcp ? r.id : null })),
+    endpoints: API.map((r) => ({
+      method: r.method, path: r.path, summary: r.summary, version: r.version, mcpTool: r.mcp ? r.id : null,
+      ...(r.deprecated && { deprecated: r.deprecated }),
+    })),
   };
 }
 
@@ -671,14 +1132,21 @@ function openApiSpec() {
   const error = { type: "object", properties: { ok: { const: false }, error: { type: "string" } } };
   const paths = {};
   for (const r of API) {
-    const bodyFields = Object.keys(r.input ?? {}).filter((k) => !r.params.includes(k));
+    // Inputs that aren't path parameters go in the JSON body for POST, and in the query string otherwise.
+    const otherFields = Object.keys(r.input ?? {}).filter((k) => !r.params.includes(k));
+    const bodyFields = r.method === "POST" ? otherFields : [];
+    const queryFields = r.method === "POST" ? [] : otherFields;
+    const parameters = [
+      ...r.params.map((name) => ({ name, in: "path", required: true, schema: r.input[name] })),
+      ...queryFields.map((name) => ({ name, in: "query", required: (r.required ?? []).includes(name), schema: r.input[name] })),
+    ];
     const op = {
       operationId: r.id,
       summary: r.summary,
+      "x-version": r.version,
+      ...(r.deprecated && { deprecated: true, description: `Deprecated: ${r.deprecated}.` }),
       ...(r.mcp && { "x-mcp-tool": r.id }),
-      ...(r.params.length && {
-        parameters: r.params.map((name) => ({ name, in: "path", required: true, schema: r.input[name] })),
-      }),
+      ...(parameters.length && { parameters }),
       ...(bodyFields.length && {
         requestBody: {
           required: true,
@@ -731,23 +1199,25 @@ const MCP_INSTRUCTIONS = `Tools provided by the container this session runs in, 
 - notify: send the owner a Telegram message. Use it when the owner asked to be told about something (a result, a finished long task, a failure in something they rely on). Don't use it for progress updates or debugging, and don't send the same message twice.
 - email: send an email, for longer content the owner wants by mail (reports, digests, summaries). Use notify for short alerts. It goes to the owner by default; only send to other people when the owner asked for it.
 - get_config / list_config: read values from the owner's central config (agent.env). Use these for URLs, account names and other settings instead of asking the owner or hardcoding values. If a needed key is missing, tell the owner the exact key name to add; never invent a value. Bot and GitHub tokens are never returned.
+- add_schedule / list_schedules / run_schedule / remove_schedule: run a command regularly, such as a project's daily script. Use these instead of crontab, systemd or a sleep loop. After adding a job, test it with run_schedule and check get_log. By default the owner gets a Telegram message only when a run fails.
+- list_logs / get_log: read the container's logs, 'agent' and one per scheduled job, to troubleshoot.
 Every tool is also a REST endpoint at $AGENT_TOOLS_URL, described by $AGENT_TOOLS_URL/openapi.json. Programs you write in /workspace can't use MCP, so they must call those endpoints instead.`;
 
 const mcpTools = () =>
   API.filter((r) => r.mcp).map((r) => ({
     name: r.id,
-    description: r.mcp.description,
+    description: r.deprecated ? `Deprecated: ${r.deprecated}. ${r.mcp.description}` : r.mcp.description,
     inputSchema: { type: "object", properties: r.input ?? {}, required: r.required ?? [] },
   }));
 
-async function mcpCallTool(name, args) {
+async function mcpCallTool(name, args, ctx) {
   const route = API.find((r) => r.mcp && r.id === name);
   if (!route) return null;
-  const [, body] = await callRoute(route, args && typeof args === "object" ? args : {});
+  const [, body] = await callRoute(route, args && typeof args === "object" ? args : {}, ctx);
   return { content: [{ type: "text", text: body.ok ? route.mcp.result(body) : body.error }], isError: !body.ok };
 }
 
-async function handleMcp(raw) {
+async function handleMcp(raw, caller) {
   const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
   let msg;
   try { msg = JSON.parse(raw); } catch { return [400, rpcError(null, -32700, "Parse error")]; }
@@ -770,7 +1240,7 @@ async function handleMcp(raw) {
     case "tools/list":
       return result({ tools: mcpTools() });
     case "tools/call": {
-      const called = await mcpCallTool(params?.name, params?.arguments);
+      const called = await mcpCallTool(params?.name, params?.arguments, { via: "mcp", caller: caller() });
       return called ? result(called) : [200, rpcError(id, -32602, `Unknown tool: ${params?.name}`)];
     }
     default:
@@ -795,11 +1265,13 @@ async function registerMcpServer() {
 // ---------- HTTP server ----------
 
 async function handleTools(req) {
-  const { pathname } = new URL(req.url, "http://localhost");
+  const { pathname, searchParams } = new URL(req.url, "http://localhost");
+  let who;
+  const caller = () => (who ??= identifyCaller(req));
 
   if (pathname === "/mcp") {
     return req.method === "POST"
-      ? handleMcp(await readBody(req))
+      ? handleMcp(await readBody(req), caller)
       : [405, { ok: false, error: "MCP clients POST JSON-RPC to /mcp" }];
   }
   if (req.method === "GET" && pathname === "/") return [200, apiIndex()];
@@ -815,9 +1287,13 @@ async function handleTools(req) {
       if (!input || typeof input !== "object" || Array.isArray(input)) {
         return [400, { ok: false, error: "The body must be a JSON object" }];
       }
+    } else {
+      for (const name of Object.keys(route.input ?? {})) {
+        if (searchParams.has(name)) input[name] = searchParams.get(name);
+      }
     }
     route.params.forEach((name, i) => { input[name] = decodeURIComponent(m[i + 1]); });
-    return callRoute(route, input);
+    return callRoute(route, input, { via: "rest", caller: caller() });
   }
   return [404, { ok: false, error: "Unknown endpoint. GET / lists the endpoints, GET /openapi.json describes them." }];
 }
@@ -842,12 +1318,17 @@ function startToolsServer() {
 
 for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => {
+    stopping = true;
+    saveUsage();
+    try { supercronic?.kill("SIGTERM"); } catch {}
     try { tmux("kill-server"); } catch {}
     process.exit(0);
   });
 }
 
 startToolsServer();
+clearStaleJobStates();
+startScheduler();
 await registerMcpServer();
 if (telegram) pollTelegram();
 else log("Telegram is not configured (TELEGRAM_TOKEN / ALLOWED_USER_IDS in agent.env); messages go to the container log only.");
