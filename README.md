@@ -63,10 +63,11 @@ The project's `AGENTS.md` is its memory. Claude writes it before anything else a
 current, so a later session, or another agent, picks up where the last one stopped. To come
 back, say "let's continue on price-watcher" and Claude reads that file first.
 
-Inside the folder Claude can write code, run it, and use the container's tools: Telegram
-messages, email and values from `agent.env` (see [Tools API](#tools-api)). It also runs
-`git init`, and once there's something worth keeping, it can create a private GitHub repo
-and push (see [GitHub](#github)).
+Projects are built in Node.js unless you ask for another language. Inside the folder Claude
+can write code, run it, and use the container's tools: Telegram messages, email, scheduled
+jobs and values from `agent.env` (see [Tools API](#tools-api)). It also runs `git init`, and
+once there's something worth keeping, it can create a private GitHub repo and push (see
+[GitHub](#github)).
 
 ```mermaid
 flowchart LR
