@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
 const CONFIG_DIR = "/config";
 const ENV_FILE = `${CONFIG_DIR}/agent.env`;
 // agent.env is the one central config; the tools API serves all of it except these.
-const HIDDEN_CONFIG_KEYS = new Set(["TELEGRAM_TOKEN"]);
+const HIDDEN_CONFIG_KEYS = new Set(["TELEGRAM_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]);
 const TMUX_CONF = "/opt/agent/tmux.conf";
 const LOGIN_REPLY_MINUTES = 30;
 const HOUR = 3600_000;
