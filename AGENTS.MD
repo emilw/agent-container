@@ -4,6 +4,16 @@ You are an agent proxy for working with Claude remote in a container. This file 
 ## Main instructions
 Always load the AGENTS.md file in /workspace, this is mounted to the main workspace folder where further instructions are carried out.
 
+## Starting a new project
+When the owner asks to start a new project ("Hi, I want to start a new project"):
+1. Agree on a short folder name in lowercase with hyphens, such as `price-watcher`. Ask if it isn't clear from the request.
+2. Create `/workspace/<name>/` and keep everything for the project inside it. Never put project files directly in `/workspace`.
+3. Write `/workspace/<name>/AGENTS.md` first: what the project is for, how to run and test it, and which tools service features and `agent.env` keys it uses. Keep it current as the project changes.
+4. Run `git init` in the folder. Once there is something worth keeping, offer to create a private GitHub repo with `gh repo create`.
+5. If `/workspace/AGENTS.md` has its own rules for new projects, follow those instead.
+
+When the owner asks to continue on a project, read its `AGENTS.md` before changing anything.
+
 ## GitHub
 The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials, so `git push` and `gh pr create` work once `gh` is logged in. The login is stored in `/config/gh` and survives restarts and image updates.
 
@@ -17,7 +27,7 @@ The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials
 ## Tools service
 The container runs a tools service with two front doors over the same functions:
 
-- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `get_config` and `list_config`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
+- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config` and `list_config`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
 - **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
 Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To see what's available, read `$AGENT_TOOLS_URL/openapi.json` (an OpenAPI 3.1 description; endpoints marked `x-mcp-tool` are also MCP tools), `GET $AGENT_TOOLS_URL/` for a short list, or run `agent-tools api`. Check it rather than relying only on the table below, which may lag behind new features.
@@ -28,6 +38,7 @@ Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To 
 | Call | Does |
 | --- | --- |
 | `POST /notify` with `{"text": "...", "title": "optional"}` | Sends a Telegram message to the owner. Max 20 a minute. |
+| `POST /email` with `{"subject": "...", "text": "...", "html": "optional", "to": "optional"}` | Sends an email from the owner's mail account, to `MAIL_TO` by default. `to` may only name addresses in `MAIL_TO` or `MAIL_ALLOWED_TO`. Max 30 an hour. |
 | `GET /config/<KEY>` | Returns `{"value": "..."}` from the owner's central config, `agent.env`. 404 if the key doesn't exist. |
 | `GET /config` | Lists the available keys (names only). |
 | `GET /health` | Checks the service is up, and whether Telegram is configured. |
@@ -50,11 +61,14 @@ const { value: apiUrl } = await (await fetch(`${TOOLS}/config/EXAMPLE_API_URL`))
 From a shell script:
 ```bash
 agent-tools notify "Backup finished" --title "Nightly job"
+agent-tools email "Morning digest" "Plain-text version" --html out/digest.html
 API_URL=$(agent-tools config EXAMPLE_API_URL)
 ```
 
 Rules:
 - Read configuration values at runtime through this service. Never copy them into code or commit them.
 - If a program needs a value that doesn't exist yet, tell the owner the key name to add to `agent.env`. Don't invent a value.
-- The Telegram bot token and `GH_TOKEN` are never available from `/config`. Send messages through `/notify`, and use `gh` and `git` for GitHub.
+- The Telegram bot token, `GH_TOKEN` and `SMTP_PASS` are never available from `/config`. Send messages through `/notify` and `/email`, and use `gh` and `git` for GitHub.
+- Use `/email` for longer content the owner wants by mail (reports, digests), and `/notify` for short alerts. Never add your own SMTP code or ask for mail credentials.
+- If mail must go to someone other than the owner, ask the owner to add the address to `MAIL_ALLOWED_TO`. Don't work around it.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.

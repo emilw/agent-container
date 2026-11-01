@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Command-line client for the container's tools API (see AGENTS.MD).
 //   agent-tools notify "Backup finished" [--title "Nightly job"]
+//   agent-tools email "Subject" "Body text" [--html body.html] [--to a@example.com]
+//                                 body "-" reads the text from stdin
 //   agent-tools config            list keys in agent.env
 //   agent-tools config KEY        print one value
 //   agent-tools api               list every endpoint (GET /openapi.json has the details)
@@ -26,6 +28,23 @@ try {
     const i = args.indexOf("--title");
     const title = i >= 0 ? args.splice(i, 2)[1] : undefined;
     await call("POST", "/notify", { text: args.join(" "), title });
+  } else if (cmd === "email") {
+    const opt = (name) => {
+      const i = args.indexOf(name);
+      return i >= 0 ? args.splice(i, 2)[1] : undefined;
+    };
+    const htmlFile = opt("--html");
+    const to = opt("--to");
+    const [subject, body] = args;
+    if (!subject || body === undefined || args.length > 2) {
+      console.error('Usage: agent-tools email "Subject" "Body text" [--html body.html] [--to a@example.com]');
+      process.exit(2);
+    }
+    const { readFileSync } = await import("node:fs");
+    const text = body === "-" ? readFileSync(0, "utf8") : body;
+    const html = htmlFile ? readFileSync(htmlFile, "utf8") : undefined;
+    const data = await call("POST", "/email", { subject, text, html, to });
+    console.log(`Sent to ${data.to.join(", ")}`);
   } else if (cmd === "config" && args.length <= 1) {
     const data = await call("GET", args[0] ? `/config/${encodeURIComponent(args[0])}` : "/config");
     console.log(args[0] ? data.value : data.keys.join("\n"));
@@ -33,7 +52,7 @@ try {
     const { endpoints } = await call("GET", "/");
     for (const e of endpoints) console.log(`${e.method.padEnd(5)}${e.path.padEnd(16)}${e.summary}`);
   } else {
-    console.error('Usage: agent-tools notify "text" [--title "title"] | agent-tools config [KEY] | agent-tools api');
+    console.error('Usage: agent-tools notify "text" [--title "title"] | agent-tools email "Subject" "Body" [--html file] [--to addr] | agent-tools config [KEY] | agent-tools api');
     process.exit(2);
   }
 } catch (e) {

@@ -8,12 +8,13 @@ import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
+import { addr, sendMail } from "./smtp.mjs";
 
 const execFileAsync = promisify(execFile);
 const CONFIG_DIR = "/config";
 const ENV_FILE = `${CONFIG_DIR}/agent.env`;
 // agent.env is the one central config; the tools API serves all of it except these.
-const HIDDEN_CONFIG_KEYS = new Set(["TELEGRAM_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]);
+const HIDDEN_CONFIG_KEYS = new Set(["TELEGRAM_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "SMTP_PASS"]);
 const TMUX_CONF = "/opt/agent/tmux.conf";
 const LOGIN_REPLY_MINUTES = 30;
 const HOUR = 3600_000;
@@ -503,6 +504,48 @@ function toolsConfig(key) {
     : [404, { ok: false, error: `No ${key} in agent.env` }];
 }
 
+const EMAIL_LIMIT_PER_HOUR = 30;
+let emailTimes = [];
+const splitList = (s) => (s ?? "").split(",").map((a) => a.trim()).filter(Boolean);
+
+async function toolsEmail({ subject, text, html, to }) {
+  // Read the SMTP settings on every send, so edits to agent.env apply without a restart.
+  const env = parseEnvFile(ENV_FILE);
+  const missing = ["SMTP_HOST", "MAIL_FROM", "MAIL_TO"].filter((k) => !env[k]);
+  if (missing.length) return [503, { ok: false, error: `Email is not configured: add ${missing.join(", ")} to agent.env` }];
+
+  // Recipients always come from agent.env, so mail only goes to addresses the owner listed.
+  let recipients = splitList(env.MAIL_TO);
+  if (to !== undefined) {
+    const allowed = new Map([...recipients, ...splitList(env.MAIL_ALLOWED_TO)].map((a) => [addr(a).toLowerCase(), a]));
+    const asked = splitList(to);
+    const unknown = asked.filter((a) => !allowed.has(addr(a).toLowerCase()));
+    if (!asked.length) return [400, { ok: false, error: "to is empty" }];
+    if (unknown.length) {
+      return [403, { ok: false, error: `Not an allowed recipient: ${unknown.join(", ")}. The owner can add it to MAIL_ALLOWED_TO in agent.env.` }];
+    }
+    recipients = asked.map((a) => allowed.get(addr(a).toLowerCase()));
+  }
+
+  const now = Date.now();
+  emailTimes = emailTimes.filter((t) => now - t < HOUR);
+  if (emailTimes.length >= EMAIL_LIMIT_PER_HOUR) {
+    return [429, { ok: false, error: `More than ${EMAIL_LIMIT_PER_HOUR} emails an hour` }];
+  }
+  emailTimes.push(now);
+
+  try {
+    await sendMail(
+      { host: env.SMTP_HOST, port: Number(env.SMTP_PORT) || 587, user: env.SMTP_USER, pass: env.SMTP_PASS, helo: "agent-container" },
+      { from: env.MAIL_FROM, to: recipients, subject: subject.trim(), text, html: html || undefined },
+    );
+  } catch (e) {
+    log(`Email failed: ${e.message}`);
+    return [502, { ok: false, error: `Sending failed: ${e.message}` }];
+  }
+  return [200, { ok: true, to: recipients.map(addr) }];
+}
+
 // Each entry: id (OpenAPI operationId and MCP tool name), method, path ({name} segments are
 // path parameters), summary, input (JSON Schema properties; path parameters plus the JSON
 // body), required, response (properties returned besides ok), run(input) -> [status, body],
@@ -531,6 +574,25 @@ const API = [
     mcp: {
       description: `Send a Telegram message to the owner's phone. For results or events the owner asked to hear about, not progress or debugging. At most ${NOTIFY_LIMIT_PER_MINUTE} a minute.`,
       result: (body) => `Sent to ${body.sent} Telegram user(s).`,
+    },
+  },
+  {
+    id: "email",
+    method: "POST",
+    path: "/email",
+    summary: `Send an email from the owner's configured mail account. Goes to MAIL_TO; 'to' may only name addresses in MAIL_TO or MAIL_ALLOWED_TO. At most ${EMAIL_LIMIT_PER_HOUR} an hour.`,
+    input: {
+      subject: { type: "string", description: "Subject line" },
+      text: { type: "string", description: "Plain-text body. Also shown by mail apps that don't display HTML." },
+      html: { type: "string", description: "Optional HTML body" },
+      to: { type: "string", description: "Optional comma-separated recipients; each must be in MAIL_TO or MAIL_ALLOWED_TO. Defaults to MAIL_TO." },
+    },
+    required: ["subject", "text"],
+    response: { to: { type: "array", items: { type: "string" }, description: "Addresses the mail was sent to" } },
+    run: toolsEmail,
+    mcp: {
+      description: "Send the owner an email. Use it for longer content the owner wants by mail, such as reports, digests or summaries; use notify for short alerts. Goes to the owner unless 'to' names an address the owner allowed.",
+      result: (body) => `Sent to ${body.to.join(", ")}.`,
     },
   },
   {
@@ -637,7 +699,8 @@ function readBody(req) {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 64 * 1024) reject(Object.assign(new Error("Body too large"), { status: 413 }));
+      // Room for an HTML email body
+      if (body.length > 2 * 1024 * 1024) reject(Object.assign(new Error("Body too large"), { status: 413 }));
     });
     req.on("end", () => resolve(body));
     req.on("error", reject);
@@ -652,6 +715,7 @@ const MCP_NAME = "agent-tools";
 
 const MCP_INSTRUCTIONS = `Tools provided by the container this session runs in, on the owner's NAS.
 - notify: send the owner a Telegram message. Use it when the owner asked to be told about something (a result, a finished long task, a failure in something they rely on). Don't use it for progress updates or debugging, and don't send the same message twice.
+- email: send the owner an email, for longer content they want by mail (reports, digests, summaries). Use notify for short alerts. Only addresses the owner listed can receive mail.
 - get_config / list_config: read values from the owner's central config (agent.env). Use these for URLs, account names and other settings instead of asking the owner or hardcoding values. If a needed key is missing, tell the owner the exact key name to add; never invent a value. Bot and GitHub tokens are never returned.
 Every tool is also a REST endpoint at $AGENT_TOOLS_URL, described by $AGENT_TOOLS_URL/openapi.json. Programs you write in /workspace can't use MCP, so they must call those endpoints instead.`;
 
