@@ -4,6 +4,16 @@ You are an agent proxy for working with Claude remote in a container. This file 
 ## Main instructions
 Always load the AGENTS.md file in /workspace, this is mounted to the main workspace folder where further instructions are carried out.
 
+## Starting a new project
+When the owner asks to start a new project ("Hi, I want to start a new project"):
+1. Agree on a short folder name in lowercase with hyphens, such as `price-watcher`. Ask if it isn't clear from the request.
+2. Create `/workspace/<name>/` and keep everything for the project inside it. Never put project files directly in `/workspace`.
+3. Write `/workspace/<name>/AGENTS.md` first: what the project is for, how to run and test it, and which tools service features and `agent.env` keys it uses. Keep it current as the project changes.
+4. Run `git init` in the folder. Once there is something worth keeping, offer to create a private GitHub repo with `gh repo create`.
+5. If `/workspace/AGENTS.md` has its own rules for new projects, follow those instead.
+
+When the owner asks to continue on a project, read its `AGENTS.md` before changing anything.
+
 ## GitHub
 The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials, so `git push` and `gh pr create` work once `gh` is logged in. The login is stored in `/config/gh` and survives restarts and image updates.
 

@@ -40,6 +40,58 @@ private: anyone with a copy of `config/claude/` can use your Claude account.
 If no link arrives within 30 seconds, the bot sends you Remote Control's screen instead
 and types your reply into it.
 
+## Starting a new project
+
+Open the **nas** session in the Claude app and say what you want, for example:
+
+> Hi, I want to start a new project: a script that checks a web shop every morning and
+> emails me when the price drops.
+
+Claude agrees on a folder name with you, then creates the project as its own folder in
+`/workspace`, your repos folder on the NAS:
+
+```text
+/workspace
+├── AGENTS.md            your rules for every project (optional)
+├── myNewsFeed/
+└── price-watcher/       the new project
+    ├── AGENTS.md        written first: purpose, how to run it, what it uses
+    └── ...              the code, scripts or whatever the project needs
+```
+
+The project's `AGENTS.md` is its memory. Claude writes it before anything else and keeps it
+current, so a later session, or another agent, picks up where the last one stopped. To come
+back, say "let's continue on price-watcher" and Claude reads that file first.
+
+Inside the folder Claude can write code, run it, and use the container's tools: Telegram
+messages, email and values from `agent.env` (see [Tools API](#tools-api)). It also runs
+`git init`, and once there's something worth keeping, it can create a private GitHub repo
+and push (see [GitHub](#github)).
+
+```mermaid
+flowchart LR
+    you["You, in the Claude app:<br/>'Hi, I want to start<br/>a new project'"]
+    gh[("GitHub")]
+    subgraph nas["Container on the NAS"]
+        claude["Claude session<br/>(Remote Control)"]
+        tools["Tools service<br/>notify · email · config"]
+        subgraph ws["/workspace"]
+            rules["AGENTS.md<br/>your rules for all projects"]
+            proj["price-watcher/<br/>AGENTS.md + code"]
+        end
+    end
+    you --> claude
+    claude -. reads .-> rules
+    claude -- "1. creates folder<br/>and AGENTS.md" --> proj
+    claude -- "2. builds and runs<br/>the code" --> proj
+    proj -- "the app calls" --> tools
+    claude -- "3. git push" --> gh
+```
+
+Claude follows these steps because of the container instructions in [AGENTS.MD](AGENTS.MD).
+To change how new projects are set up, for example a default language or folder layout,
+write your own rules in `/workspace/AGENTS.md`; they take precedence.
+
 ## Telegram
 
 The bot sends a new login link, and restarts Remote Control on the new login once you
