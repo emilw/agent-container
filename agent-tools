@@ -5,7 +5,11 @@
 //                                 body "-" reads the text from stdin
 //   agent-tools config            list keys in agent.env
 //   agent-tools config KEY        print one value
+//   agent-tools logs [NAME] [--lines N]   list logs, or print the end of one ('agent' or a job)
 //   agent-tools api               list every endpoint (GET /openapi.json has the details)
+//   agent-tools <operation> key=value ...   call any endpoint by its operationId, e.g.
+//     agent-tools add_schedule name=news cron="0 7 * * *" command=./run.sh cwd=/workspace/myNewsFeed
+//     agent-tools run_schedule name=news
 const base = process.env.AGENT_TOOLS_URL || "http://127.0.0.1:7777";
 const [cmd, ...args] = process.argv.slice(2);
 
@@ -48,11 +52,46 @@ try {
   } else if (cmd === "config" && args.length <= 1) {
     const data = await call("GET", args[0] ? `/config/${encodeURIComponent(args[0])}` : "/config");
     console.log(args[0] ? data.value : data.keys.join("\n"));
+  } else if (cmd === "logs" && args.length <= 3) {
+    const i = args.indexOf("--lines");
+    const lines = i >= 0 ? args.splice(i, 2)[1] : undefined;
+    if (args[0]) {
+      const query = lines ? `?lines=${encodeURIComponent(lines)}` : "";
+      console.log((await call("GET", `/logs/${encodeURIComponent(args[0])}${query}`)).text);
+    } else {
+      for (const l of (await call("GET", "/logs")).logs) console.log(`${l.name.padEnd(42)}${String(l.bytes).padStart(9)} bytes  ${l.modified}`);
+    }
   } else if (cmd === "api" && !args.length) {
     const { endpoints } = await call("GET", "/");
-    for (const e of endpoints) console.log(`${e.method.padEnd(5)}${e.path.padEnd(16)}${e.summary}`);
+    for (const e of endpoints) console.log(`${e.method.padEnd(7)}${e.path.padEnd(24)}${e.summary}`);
+  } else if (cmd && /^[a-z_]+$/.test(cmd) && args.every((a) => a.includes("="))) {
+    // Any endpoint by operationId, so every API feature has a command without extra code here.
+    const spec = await (await fetch(`${base}/openapi.json`)).json();
+    const found = Object.entries(spec?.paths ?? {}).flatMap(([path, ops]) =>
+      Object.entries(ops).map(([method, op]) => ({ path, method: method.toUpperCase(), op })))
+      .find((e) => e.op.operationId === cmd);
+    if (!found) {
+      console.error(`agent-tools: no endpoint called ${cmd}. Run agent-tools api to see them.`);
+      process.exit(2);
+    }
+    const input = Object.fromEntries(args.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]));
+    const params = found.op.parameters ?? [];
+    let path = found.path;
+    const query = new URLSearchParams();
+    for (const p of params) {
+      if (!(p.name in input)) continue;
+      if (p.in === "path") path = path.replace(`{${p.name}}`, encodeURIComponent(input[p.name]));
+      else query.set(p.name, input[p.name]);
+      delete input[p.name];
+    }
+    const bodySchema = found.op.requestBody?.content?.["application/json"]?.schema?.properties ?? {};
+    for (const [k, v] of Object.entries(input)) if (bodySchema[k]?.type === "integer") input[k] = Number(v);
+    const qs = query.size ? `?${query}` : "";
+    const data = await call(found.method, path + qs, found.method === "POST" ? input : undefined);
+    delete data.ok;
+    console.log(typeof data.text === "string" ? data.text : JSON.stringify(data, null, 2));
   } else {
-    console.error('Usage: agent-tools notify "text" [--title "title"] | agent-tools email "Subject" "Body" [--html file] [--to addr] | agent-tools config [KEY] | agent-tools api');
+    console.error('Usage: agent-tools notify "text" [--title "title"] | email "Subject" "Body" [--html file] [--to addr] | config [KEY] | logs [NAME] [--lines N] | api | <operation> key=value ...');
     process.exit(2);
   }
 } catch (e) {

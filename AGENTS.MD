@@ -27,7 +27,7 @@ The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials
 ## Tools service
 The container runs a tools service with two front doors over the same functions:
 
-- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config` and `list_config`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
+- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) and the log tools (`list_logs`, `get_log`). They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
 - **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
 Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To see what's available, read `$AGENT_TOOLS_URL/openapi.json` (an OpenAPI 3.1 description; endpoints marked `x-mcp-tool` are also MCP tools), `GET $AGENT_TOOLS_URL/` for a short list, or run `agent-tools api`. Check it rather than relying only on the table below, which may lag behind new features.
@@ -41,6 +41,8 @@ Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To 
 | `POST /email` with `{"subject": "...", "text": "...", "html": "optional", "to": "optional"}` | Sends an email from the owner's mail account, to `to` (comma-separated), or to the owner's default address `MAIL_TO` when `to` is left out. Max 30 an hour. |
 | `GET /config/<KEY>` | Returns `{"value": "..."}` from the owner's central config, `agent.env`. 404 if the key doesn't exist. |
 | `GET /config` | Lists the available keys (names only). |
+| `GET /schedules`, `POST /schedules`, `DELETE /schedules/<name>`, `POST /schedules/<name>/run` | List, add or replace, remove and test-run scheduled jobs. See "Scheduled jobs" below. |
+| `GET /logs`, `GET /logs/<name>?lines=100` | List the logs and read the end of one: `agent`, or a scheduled job's name. |
 | `GET /health` | Checks the service is up, and whether Telegram is configured. |
 | `GET /openapi.json` | Describes every endpoint, its inputs and its responses. |
 | `GET /` | Lists the endpoints, and which are also MCP tools. |
@@ -72,3 +74,16 @@ Rules:
 - Use `/email` for longer content the owner wants by mail (reports, digests), and `/notify` for short alerts. Never add your own SMTP code or ask for mail credentials.
 - Leave `to` out to mail the owner. Only send to other people when the owner asked for it. If the owner restricted recipients with `MAIL_ALLOWED_TO` and a send is refused, ask them to add the address instead of working around it.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
+
+## Scheduled jobs
+When something should run regularly (a daily script, a check every 15 minutes), schedule it with `add_schedule` (or `POST /schedules`). Never use crontab, systemd timers, `at` or a sleep loop: they don't survive container updates, and nobody would see their failures.
+
+- `name`: lowercase letters, digits and hyphens, e.g. `mynewsfeed-morning`. Using an existing name replaces that job.
+- `cron`: five fields (minute hour day month weekday) in the container's time zone (`TZ`, default Europe/Stockholm), e.g. `0 7 * * *` for 07:00 every day or `*/15 * * * *` for every 15 minutes. `@daily` and `@hourly` also work.
+- `command`: run with `sh` in `cwd`, which must be inside `/workspace`, usually the project's folder. The job gets `AGENT_JOB_NAME` in its environment.
+- `notify`: `failure` (default) sends the owner a Telegram message when a run fails, `always` after every run, `never` not at all.
+- `timeoutMinutes`: default 60. A run still going after that is stopped.
+
+A run is skipped if the previous one is still going. Each job's output goes to its own log: `get_log name=<job>`.
+
+After adding a job: test it with `run_schedule`, read the result with `get_log`, and write the schedule into the project's `AGENTS.md`. When a job fails, start with `get_log` for that job, and `get_log name=agent` for the container's own log.

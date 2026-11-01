@@ -133,10 +133,50 @@ Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777
   `MAIL_TO` when it leaves `to` out. Optionally, `MAIL_ALLOWED_TO` limits who apps can send to.
   Port 587 uses STARTTLS, 465 TLS.
 - `GET /config/<KEY>` returns a value from `config/agent.env`; `GET /config` lists the keys
+- `/schedules` runs commands on a schedule, and `/logs` serves the logs (see below)
 
 Every key in `agent.env` is served except `TELEGRAM_TOKEN`, `GH_TOKEN` and `SMTP_PASS`. Value changes apply
-immediately; the container's own settings still need a restart. Shell scripts can use `agent-tools notify "..."` and
-`agent-tools config KEY`. [AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
+immediately; the container's own settings still need a restart.
+
+Shell scripts use `agent-tools`: `agent-tools notify "..."`, `agent-tools email ...`,
+`agent-tools config KEY`, `agent-tools logs [NAME]`, and any endpoint by its name, e.g.
+`agent-tools run_schedule name=news`. `agent-tools api` lists them.
+[AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
+
+### Scheduled jobs
+
+Jobs run on a cron schedule in the container's time zone (`TZ` in `agent.env`, default
+Europe/Stockholm), using [supercronic](https://github.com/aptible/supercronic). They're kept
+in `config/schedules.json`, so they survive restarts and image updates. Claude sets them up
+with the MCP tools, or you can call the API yourself:
+
+```bash
+agent-tools add_schedule name=mynewsfeed cron="0 7 * * *" command=./run.sh cwd=/workspace/myNewsFeed
+agent-tools run_schedule name=mynewsfeed     # run it now, to test
+agent-tools list_schedules                   # last run, exit code, duration
+agent-tools remove_schedule name=mynewsfeed
+```
+
+- **Notifications:** you get a Telegram message when a run fails, with its last output.
+  Set `notify=always` or `notify=never` per job.
+- **Overlap:** a run is skipped while the previous one is still going.
+- **Timeouts:** runs are stopped after `timeoutMinutes` (default 60).
+- **Restarts:** a run interrupted by a container restart is marked as interrupted.
+
+### Logs
+
+`config/logs/` holds `agent.log` (logins, Remote Control, the scheduler) and one log per job,
+`<job>.log`, each with a start and finish line per run. Logs over 5 MB (agent) or 2 MB (jobs)
+are moved to `.log.1`. Read them through the API:
+
+```bash
+agent-tools logs                      # list
+agent-tools logs mynewsfeed           # last 100 lines of a job's log
+agent-tools logs agent --lines 300    # the container's own log
+```
+
+The same is `GET /logs` and `GET /logs/<name>?lines=N`, and the MCP tools `list_logs` and
+`get_log`, so Claude can troubleshoot a failing job by itself.
 
 `GET /openapi.json` describes every endpoint (OpenAPI 3.1), `GET /` lists them, and
 `agent-tools api` prints the list.

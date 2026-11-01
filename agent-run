@@ -1,0 +1,108 @@
+#!/usr/bin/env node
+// Runs one scheduled job: agent-run <name>. Started by supercronic on the job's schedule, and
+// by POST /schedules/<name>/run. Appends the output to /config/logs/<name>.log, records the
+// result in /config/state/<name>.json, skips the run if the previous one is still going,
+// enforces the job's timeout, and sends a Telegram message on failure (or always/never).
+import { spawn } from "node:child_process";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+
+const CONFIG_DIR = "/config";
+const LOG_MAX_BYTES = 2 * 1024 * 1024;
+
+const name = process.argv[2];
+const trigger = process.env.AGENT_RUN_TRIGGER || "schedule";
+const now = () => new Date().toLocaleString("sv-SE");
+
+let job;
+try {
+  job = JSON.parse(readFileSync(`${CONFIG_DIR}/schedules.json`, "utf8")).jobs?.find((j) => j.name === name);
+} catch {}
+if (!job) {
+  console.error(`agent-run: no scheduled job named ${name}`);
+  process.exit(2);
+}
+
+mkdirSync(`${CONFIG_DIR}/logs`, { recursive: true });
+mkdirSync(`${CONFIG_DIR}/state`, { recursive: true });
+const LOG = `${CONFIG_DIR}/logs/${name}.log`;
+const STATE = `${CONFIG_DIR}/state/${name}.json`;
+
+const readState = () => { try { return JSON.parse(readFileSync(STATE, "utf8")); } catch { return {}; } };
+const writeState = (s) => { writeFileSync(`${STATE}.tmp`, JSON.stringify(s, null, 2)); renameSync(`${STATE}.tmp`, STATE); };
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+const state = readState();
+if (state.running && state.pid && alive(state.pid)) {
+  appendFileSync(LOG, `\n=== ${now()} skipped (${trigger}): the previous run, pid ${state.pid}, is still running ===\n`);
+  process.exit(0);
+}
+
+// Keep the log at most LOG_MAX_BYTES: move the old one aside before it grows past that.
+try { if (statSync(LOG).size > LOG_MAX_BYTES) renameSync(LOG, `${LOG}.1`); } catch {}
+
+const started = Date.now();
+appendFileSync(LOG, `\n=== ${now()} started (${trigger}) in ${job.cwd}: ${job.command} ===\n`);
+const runStart = statSync(LOG).size;
+writeState({ ...state, running: true, pid: process.pid, lastStart: new Date(started).toISOString(), lastTrigger: trigger });
+
+const out = openSync(LOG, "a");
+// detached: the job gets its own process group, so a timeout can stop everything it started.
+const child = spawn("sh", ["-c", job.command], {
+  cwd: job.cwd,
+  stdio: ["ignore", out, out],
+  detached: true,
+  env: { ...process.env, AGENT_JOB_NAME: name },
+});
+
+let timedOut = false;
+const timeoutMs = (job.timeoutMinutes || 60) * 60_000;
+const timer = setTimeout(() => {
+  timedOut = true;
+  try { process.kill(-child.pid, "SIGTERM"); } catch {}
+  setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 10_000).unref();
+}, timeoutMs);
+
+const exitCode = await new Promise((resolve) => {
+  child.on("error", (e) => { appendFileSync(LOG, `agent-run: could not start the job: ${e.message}\n`); resolve(127); });
+  child.on("exit", (code, signal) => resolve(code ?? 128 + ({ SIGTERM: 15, SIGKILL: 9 }[signal] ?? 1)));
+});
+clearTimeout(timer);
+closeSync(out);
+
+const seconds = Math.round((Date.now() - started) / 1000);
+const outcome = timedOut ? `timed out after ${job.timeoutMinutes || 60} min` : `exit ${exitCode}`;
+appendFileSync(LOG, `=== ${now()} finished: ${outcome} after ${seconds}s ===\n`);
+writeState({
+  ...readState(),
+  running: false,
+  pid: null,
+  lastEnd: new Date().toISOString(),
+  lastExit: exitCode,
+  lastDurationSeconds: seconds,
+  lastTimedOut: timedOut,
+  lastTrigger: trigger,
+});
+
+const failed = exitCode !== 0;
+if (job.notify === "always" || (failed && job.notify !== "never")) {
+  let tail = "";
+  try {
+    const run = readFileSync(LOG, "utf8").slice(runStart);
+    tail = run.split("\n").filter((l) => l.trim() && !l.startsWith("=== ")).slice(-10).join("\n");
+  } catch {}
+  const text = `${failed ? "Failed" : "Finished"} (${outcome}, ${seconds}s, ${trigger}).` +
+    (tail ? `\n\nLast output:\n${tail}` : "") +
+    (failed ? `\n\nFull log: GET /logs/${name}` : "");
+  try {
+    await fetch(`${process.env.AGENT_TOOLS_URL || "http://127.0.0.1:7777"}/notify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: `Job ${name}`, text }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (e) {
+    appendFileSync(LOG, `agent-run: could not send the notification: ${e.message}\n`);
+  }
+}
+
+process.exit(exitCode);
