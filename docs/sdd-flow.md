@@ -1,6 +1,6 @@
 # SDD flow: from issue to merged change
 
-How coding agents (Claude Code, Codex or others) take a reported GitHub issue on this
+How a coding agent takes a reported GitHub issue on this
 repository to a merged pull request. SDD is spec-driven development: agree on *what* to build,
 then *how*, then build it. Each step is a sub-issue of the reported issue, so the issue itself
 shows where the work stands. The owner approves each step before the next one starts.

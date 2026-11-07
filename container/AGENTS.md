@@ -1,5 +1,5 @@
 # AGENTS.md
-You are an agent proxy for working with Claude remote in a container. This file just bootstraps the flow, read ## Main instructions for more details.
+You are an agent running in a container on the owner's NAS, used remotely. This file just bootstraps the flow, read ## Main instructions for more details.
  
 ## Main instructions
 Always load the AGENTS.md file in /workspace, this is mounted to the main workspace folder where further instructions are carried out.
@@ -28,7 +28,7 @@ The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials
 ## Tools service
 The container runs a tools service with two front doors over the same functions:
 
-- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) the log tools (`list_logs`, `get_log`) and `get_usage`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
+- **You (the agent) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) the log tools (`list_logs`, `get_log`) and `get_usage`. They are connected automatically. Use them directly instead of calling the HTTP API with curl.
 - **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
 Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To see what's available, read `$AGENT_TOOLS_URL/openapi.json` (an OpenAPI 3.1 description; endpoints marked `x-mcp-tool` are also MCP tools), `GET $AGENT_TOOLS_URL/` for a short list, or run `agent-tools api`. Check it rather than relying only on the table below, which may lag behind new features.

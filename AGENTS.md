@@ -1,12 +1,12 @@
 # AGENTS.md: maintaining agent-container
 
-These instructions are for coding agents (Claude Code, Codex or others) working on this
-repository, which builds the agent-container Docker image. They are not part of the image.
+These instructions are for any coding agent working on this repository, which builds the
+agent-container Docker image. They are not part of the image.
 
 The instructions for agents running *inside* the container are in
-[container/AGENTS.md](container/AGENTS.md); the image installs that file as
-`/etc/claude-code/CLAUDE.md`. Edit it when the container's behaviour for its users changes,
-and never put repository-maintenance instructions there.
+[container/AGENTS.md](container/AGENTS.md); the image installs that file where the
+container's agent tool loads it (see the Dockerfile). Edit it when the container's behaviour
+for its users changes, and never put repository-maintenance instructions there.
 
 ## Working on an issue
 
@@ -41,6 +41,13 @@ the request is just "fix #12".
 - **Every tools feature is an `API` registry entry**, so it gets a REST endpoint, an MCP tool,
   an OpenAPI entry and an `agent-tools` command together. Describe it in `container/AGENTS.md`
   if agents in the container should use it, and in `README.md` for the owner.
+- **Keep everything agent-tool neutral** except the parts that can't be. Today the container
+  runs Claude Code, and only these are specific to it: the login relay, Remote Control, the
+  health check and the workspace trust step in `agent.mjs`; MCP server registration
+  (`registerMcpServer`); `CLAUDE_CONFIG_DIR`; and where the Dockerfile installs
+  `container/AGENTS.md`. The README lists them under "Agent tool: Claude Code". Keep new
+  tool-specific code next to those parts, and keep instructions, the tools API, MCP tools,
+  scheduling and docs free of a particular tool's names.
 - **No new npm dependencies.** The image's scripts use only Node 22's standard library.
 - **No secrets in the repo.** All configuration lives in `/config` on the owner's NAS
   (`agent.env`); document new keys in `agent.env.example`.
