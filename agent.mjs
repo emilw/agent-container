@@ -636,7 +636,10 @@ function clearStaleJobStates() {
 function startScheduler() {
   writeCrontab();
   supercronic = spawn("supercronic", ["-quiet", CRONTAB], { stdio: ["ignore", "pipe", "pipe"], env: process.env });
-  const forward = (chunk) => chunk.toString().split("\n").filter(Boolean).forEach((l) => log(`[cron] ${l}`));
+  // Decode as a stream, so a character split across two chunks stays intact
+  supercronic.stdout.setEncoding("utf8");
+  supercronic.stderr.setEncoding("utf8");
+  const forward = (chunk) => chunk.split("\n").filter(Boolean).forEach((l) => log(`[cron] ${l}`));
   supercronic.stdout.on("data", forward);
   supercronic.stderr.on("data", forward);
   supercronic.on("exit", (code) => {
@@ -1178,13 +1181,19 @@ function openApiSpec() {
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = "";
+    const chunks = [];
+    let bytes = 0;
     req.on("data", (chunk) => {
-      body += chunk;
+      bytes += chunk.length;
       // Room for an HTML email body
-      if (body.length > 2 * 1024 * 1024) reject(Object.assign(new Error("Body too large"), { status: 413 }));
+      if (bytes > 2 * 1024 * 1024) {
+        req.removeAllListeners("data");
+        return reject(Object.assign(new Error("Body too large"), { status: 413 }));
+      }
+      chunks.push(chunk);
     });
-    req.on("end", () => resolve(body));
+    // Decode once, so a character split across two chunks stays intact
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
