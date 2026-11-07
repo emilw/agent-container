@@ -1,13 +1,46 @@
 # agent-container
 
-An AI coding agent in a container on a NAS, which you work with remotely from your phone or
-browser. Today the agent is Claude Code, as a Remote Control server whose sessions show up in
-claude.ai/code, the Claude mobile app and Claude Desktop (see
-[Agent tool: Claude Code](#agent-tool-claude-code)). Logging in, and renewing
-the login when it expires, happens over Telegram: no SSH needed.
+**Your own AI coding agent, running on your own hardware, reachable from your phone.**
 
-The image is built by GitHub Actions and published to
-`ghcr.io/emilw/agent-container` (amd64 + arm64) on every push to `main` and weekly.
+Wouldn't it be nice if your coding agent lived in a container on your NAS, working on your
+projects around the clock, and you could still pick it up from the Claude app on your phone,
+on the couch or on the train?
+
+Wouldn't it be nice to use the agent tool you like today, Claude Code, without locking
+yourself in? Your projects, instructions, schedules and tools don't depend on the agent
+tool, so when a better one comes along, you swap one part and keep everything else.
+
+And wouldn't it be nice if every app you build came with the boring parts already solved?
+Telegram notifications, email, scheduled jobs, logs and central configuration are there from
+the start, the same way in every project, so you can focus on the app itself.
+
+That's agent-container.
+
+## What you get
+
+- **Runs where you want it.** One Docker image for amd64 and arm64, so it runs on a Synology,
+  a Raspberry Pi or any Linux box. Your code and settings stay on your NAS.
+- **Available everywhere.** Sessions show up in claude.ai/code, the Claude mobile app and
+  Claude Desktop through Remote Control. No ports to open and no VPN.
+- **No SSH, ever.** Logging in, and renewing the login before it expires, happens over
+  Telegram: the bot sends a link, you reply with the code.
+- **No lock-in.** The instructions (`AGENTS.md`), the tools, scheduling and your projects are
+  agent-tool neutral. Everything tied to Claude Code is listed in one place
+  ([Agent tool: Claude Code](#agent-tool-claude-code)), so moving to another tool is a
+  contained job.
+- **Building blocks for every app.** One local API, also available to agents as MCP tools:
+  - Telegram notifications and email
+  - cron schedules with logs and failure alerts
+  - one central config file
+  - a record of which app uses what
+- **Repeatable patterns.** Say "Hi, I want to start a new project" and the agent sets it up
+  the same way every time: its own folder, its own `AGENTS.md`, Node.js, git, and the shared
+  tools.
+- **Built to last.** The tools API never breaks. CI flags any incompatible change, and new
+  behaviour arrives as `/v2/`, next to the old version.
+
+The image is built by GitHub Actions and published to `ghcr.io/emilw/agent-container`
+(amd64 + arm64) on every push to `main` and weekly.
 
 ## Folders
 
