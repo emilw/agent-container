@@ -82,13 +82,6 @@ Rules:
 - Leave `to` out to mail the owner. Only send to other people when the owner asked for it. If the owner restricted recipients with `MAIL_ALLOWED_TO` and a send is refused, ask them to add the address instead of working around it.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
 
-## Changing the tools service itself
-If you're working on this container's own code (`agent.mjs` in the agent-container repo), follow the COMPATIBILITY RULES next to the API registry in `agent.mjs`: existing endpoints and MCP tools are only ever extended, never broken.
-
-- Never make a breaking change on your own: removing or renaming an endpoint, tool, input or response field, changing a type, or making an optional input required. If a change would do that, stop and ask the owner whether it's intended, and suggest adding a `/v2/...` version next to the old one instead.
-- Before deprecating or removing anything, check `GET /usage` to see who still calls it, and tell the owner.
-- CI compares the API with main's on every pull request and fails on a breaking change.
-
 ## Scheduled jobs
 When something should run regularly (a daily script, a check every 15 minutes), schedule it with `add_schedule` (or `POST /schedules`). Never use crontab, systemd timers, `at` or a sleep loop: they don't survive container updates, and nobody would see their failures.
 

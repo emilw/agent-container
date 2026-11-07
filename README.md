@@ -89,7 +89,7 @@ flowchart LR
     claude -- "3. git push" --> gh
 ```
 
-Claude follows these steps because of the container instructions in [AGENTS.MD](AGENTS.MD).
+Claude follows these steps because of the container instructions in [container/AGENTS.md](container/AGENTS.md).
 To change how new projects are set up, for example a default language or folder layout,
 write your own rules in `/workspace/AGENTS.md`; they take precedence.
 
@@ -142,7 +142,7 @@ immediately; the container's own settings still need a restart.
 Shell scripts use `agent-tools`: `agent-tools notify "..."`, `agent-tools email ...`,
 `agent-tools config KEY`, `agent-tools logs [NAME]`, and any endpoint by its name, e.g.
 `agent-tools run_schedule name=news`. `agent-tools api` lists them.
-[AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
+[container/AGENTS.md](container/AGENTS.md) tells Claude how to use all of this.
 
 ### Scheduled jobs
 
@@ -232,7 +232,7 @@ Every feature is one entry in the `API` list in [agent.mjs](agent.mjs): its REST
 inputs and handler, plus an `mcp` block if Claude should get it as a tool. The REST
 routing, the MCP tool list and `/openapi.json` are generated from that list, so every
 MCP tool always has a matching REST endpoint, and `agent-tools <id> key=value` calls it.
-Mention the feature in [AGENTS.MD](AGENTS.MD).
+Mention the feature in [container/AGENTS.md](container/AGENTS.md).
 
 ### MCP for Claude sessions
 
@@ -246,10 +246,25 @@ Check it with:
 docker exec claude claude mcp list
 ```
 
-## Instructions for Claude
+## Instructions for agents
 
-[AGENTS.MD](AGENTS.MD) is installed as `/etc/claude-code/CLAUDE.md`, so every
-session in the container loads it. It points Claude at `/workspace/AGENTS.md`.
+There are two instruction files, for two different jobs:
+
+| File | For | In the image |
+| --- | --- | --- |
+| [container/AGENTS.md](container/AGENTS.md) | Claude sessions *inside* the container: starting projects, the tools, scheduling | Yes, installed as `/etc/claude-code/CLAUDE.md`, so every session loads it. It points Claude at `/workspace/AGENTS.md` for your own rules. |
+| [AGENTS.md](AGENTS.md) | Coding agents (Claude Code, Codex, …) *maintaining this repository*: layout, rules, testing | No |
+
+## Working on this repository
+
+Issues are worked on with the SDD flow in [docs/sdd-flow.md](docs/sdd-flow.md). Tell an
+agent "work on issue #12". It then:
+
+1. triages the issue: a small bug, or the full path
+2. tracks each step as a sub-issue of the reported issue: a functional spec, a technical
+   spec and the implementation, or a single fix plan for a small bug
+3. waits for you to comment "approved" on each step before starting the next
+4. opens a pull request that closes the issue when you merge it
 
 ## Troubleshooting
 
