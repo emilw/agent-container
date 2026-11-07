@@ -33,8 +33,9 @@ ENV DISABLE_AUTOUPDATER=1 \
 COPY --chmod=755 agent.mjs smtp.mjs tmux.conf agent.env.example /opt/agent/
 COPY --chmod=755 agent-tools agent-run /usr/local/bin/
 
-# Instructions for every Claude session in the container (managed CLAUDE.md location on Linux)
-COPY --chmod=755 AGENTS.MD /etc/claude-code/CLAUDE.md
+# Instructions for every Claude session in the container (managed CLAUDE.md location on Linux).
+# Only container/AGENTS.md: the repo-root AGENTS.md and docs/ are about maintaining this image.
+COPY --chmod=755 container/AGENTS.md /etc/claude-code/CLAUDE.md
 
 RUN mkdir -p /config /workspace && chown node:node /config /workspace
 

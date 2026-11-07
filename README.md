@@ -1,18 +1,53 @@
 # agent-container
 
-Claude Code running as a Remote Control server, for a NAS. Sessions show up in
-claude.ai/code, the Claude mobile app and Claude Desktop. Logging in, and renewing
-the login when it expires, happens over Telegram: no SSH needed.
+**Your own AI coding agent, running on your own hardware, reachable from your phone.**
 
-The image is built by GitHub Actions and published to
-`ghcr.io/emilw/agent-container` (amd64 + arm64) on every push to `main` and weekly.
+Wouldn't it be nice if your coding agent lived in a container on your NAS, working on your
+projects around the clock, and you could still pick it up from the Claude app on your phone,
+on the couch or on the train?
+
+Wouldn't it be nice to use the agent tool you like today, Claude Code, without locking
+yourself in? Your projects, instructions, schedules and tools don't depend on the agent
+tool, so when a better one comes along, you swap one part and keep everything else.
+
+And wouldn't it be nice if every app you build came with the boring parts already solved?
+Telegram notifications, email, scheduled jobs, logs and central configuration are there from
+the start, the same way in every project, so you can focus on the app itself.
+
+That's agent-container.
+
+## What you get
+
+- **Runs where you want it.** One Docker image for amd64 and arm64, so it runs on a Synology,
+  a Raspberry Pi or any Linux box. Your code and settings stay on your NAS.
+- **Available everywhere.** Sessions show up in claude.ai/code, the Claude mobile app and
+  Claude Desktop through Remote Control. No ports to open and no VPN.
+- **No SSH, ever.** Logging in, and renewing the login before it expires, happens over
+  Telegram: the bot sends a link, you reply with the code.
+- **No lock-in.** The instructions (`AGENTS.md`), the tools, scheduling and your projects are
+  agent-tool neutral. Everything tied to Claude Code is listed in one place
+  ([Agent tool: Claude Code](#agent-tool-claude-code)), so moving to another tool is a
+  contained job.
+- **Building blocks for every app.** One local API, also available to agents as MCP tools:
+  - Telegram notifications and email
+  - cron schedules with logs and failure alerts
+  - one central config file
+  - a record of which app uses what
+- **Repeatable patterns.** Say "Hi, I want to start a new project" and the agent sets it up
+  the same way every time: its own folder, its own `AGENTS.md`, Node.js, git, and the shared
+  tools.
+- **Built to last.** The tools API never breaks. CI flags any incompatible change, and new
+  behaviour arrives as `/v2/`, next to the old version.
+
+The image is built by GitHub Actions and published to `ghcr.io/emilw/agent-container`
+(amd64 + arm64) on every push to `main` and weekly.
 
 ## Folders
 
 | Container path | Mount | Holds |
 | --- | --- | --- |
-| `/config` | an empty folder on the NAS | `agent.env` (the central config: container settings and values for your own programs, created on first start from [agent.env.example](agent.env.example)) and `claude/` (the Claude login, settings and history) |
-| `/workspace` | your repos folder | the code Claude works on; its `AGENTS.md` holds the main instructions |
+| `/config` | an empty folder on the NAS | `agent.env` (the central config: container settings and values for your own programs, created on first start from [agent.env.example](agent.env.example)) and `claude/` (the agent tool's login, settings and history) |
+| `/workspace` | your repos folder | the code the agent works on; its `AGENTS.md` holds the main instructions |
 
 The container runs as uid 1000, so both folders must be writable by it. `/config` is
 private: anyone with a copy of `config/claude/` can use your Claude account.
@@ -47,7 +82,7 @@ Open the **nas** session in the Claude app and say what you want, for example:
 > Hi, I want to start a new project: a script that checks a web shop every morning and
 > emails me when the price drops.
 
-Claude agrees on a folder name with you, then creates the project as its own folder in
+The agent agrees on a folder name with you, then creates the project as its own folder in
 `/workspace`, your repos folder on the NAS:
 
 ```text
@@ -59,11 +94,11 @@ Claude agrees on a folder name with you, then creates the project as its own fol
     └── ...              the code, scripts or whatever the project needs
 ```
 
-The project's `AGENTS.md` is its memory. Claude writes it before anything else and keeps it
+The project's `AGENTS.md` is its memory. The agent writes it before anything else and keeps it
 current, so a later session, or another agent, picks up where the last one stopped. To come
-back, say "let's continue on price-watcher" and Claude reads that file first.
+back, say "let's continue on price-watcher" and the agent reads that file first.
 
-Projects are built in Node.js unless you ask for another language. Inside the folder Claude
+Projects are built in Node.js unless you ask for another language. Inside the folder the agent
 can write code, run it, and use the container's tools: Telegram messages, email, scheduled
 jobs and values from `agent.env` (see [Tools API](#tools-api)). It also runs `git init`, and
 once there's something worth keeping, it can create a private GitHub repo and push (see
@@ -71,25 +106,25 @@ once there's something worth keeping, it can create a private GitHub repo and pu
 
 ```mermaid
 flowchart LR
-    you["You, in the Claude app:<br/>'Hi, I want to start<br/>a new project'"]
+    you["You, in the agent's app:<br/>'Hi, I want to start<br/>a new project'"]
     gh[("GitHub")]
     subgraph nas["Container on the NAS"]
-        claude["Claude session<br/>(Remote Control)"]
+        agent["Agent session<br/>(remote)"]
         tools["Tools service<br/>notify · email · config"]
         subgraph ws["/workspace"]
             rules["AGENTS.md<br/>your rules for all projects"]
             proj["price-watcher/<br/>AGENTS.md + code"]
         end
     end
-    you --> claude
-    claude -. reads .-> rules
-    claude -- "1. creates folder<br/>and AGENTS.md" --> proj
-    claude -- "2. builds and runs<br/>the code" --> proj
+    you --> agent
+    agent -. reads .-> rules
+    agent -- "1. creates folder<br/>and AGENTS.md" --> proj
+    agent -- "2. builds and runs<br/>the code" --> proj
     proj -- "the app calls" --> tools
-    claude -- "3. git push" --> gh
+    agent -- "3. git push" --> gh
 ```
 
-Claude follows these steps because of the container instructions in [AGENTS.MD](AGENTS.MD).
+The agent follows these steps because of the container instructions in [container/AGENTS.md](container/AGENTS.md).
 To change how new projects are set up, for example a default language or folder layout,
 write your own rules in `/workspace/AGENTS.md`; they take precedence.
 
@@ -116,12 +151,12 @@ and watch `docker logs claude`.
 The GitHub CLI (`gh`) is installed and `git` uses it for github.com credentials. Log in
 one of two ways:
 
-- Ask Claude in a session to log in to GitHub. It shows you a one-time code; approve it
+- Ask the agent in a session to log in to GitHub. It shows you a one-time code; approve it
   at github.com/login/device. The login is saved in `config/gh`.
 - Or set `GH_TOKEN` in `agent.env` (a fine-grained token limited to specific repos) and restart.
 
 Set `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL`
-in `agent.env` for the name on Claude's commits.
+in `agent.env` for the name on the agent's commits.
 
 ## Tools API
 
@@ -142,13 +177,13 @@ immediately; the container's own settings still need a restart.
 Shell scripts use `agent-tools`: `agent-tools notify "..."`, `agent-tools email ...`,
 `agent-tools config KEY`, `agent-tools logs [NAME]`, and any endpoint by its name, e.g.
 `agent-tools run_schedule name=news`. `agent-tools api` lists them.
-[AGENTS.MD](AGENTS.MD) tells Claude how to use all of this.
+[container/AGENTS.md](container/AGENTS.md) tells the agent how to use all of this.
 
 ### Scheduled jobs
 
 Jobs run on a cron schedule in the container's time zone (`TZ` in `agent.env`, default
 Europe/Stockholm), using [supercronic](https://github.com/aptible/supercronic). They're kept
-in `config/schedules.json`, so they survive restarts and image updates. Claude sets them up
+in `config/schedules.json`, so they survive restarts and image updates. The agent sets them up
 with the MCP tools, or you can call the API yourself:
 
 ```bash
@@ -177,7 +212,7 @@ agent-tools logs agent --lines 300    # the container's own log
 ```
 
 The same is `GET /logs` and `GET /logs/<name>?lines=N`, and the MCP tools `list_logs` and
-`get_log`, so Claude can troubleshoot a failing job by itself.
+`get_log`, so the agent can troubleshoot a failing job by itself.
 
 `GET /openapi.json` describes every endpoint (OpenAPI 3.1), `GET /` lists them, and
 `agent-tools api` prints the list.
@@ -210,7 +245,7 @@ Every call through REST or MCP is recorded with its caller, so before deprecatin
 you know who depends on it. The caller is identified automatically from the process on the
 other end of the localhost connection:
 - its project folder in `/workspace`
-- its program, e.g. `node app.mjs` or `claude`
+- its program, e.g. `node app.mjs` or the agent tool
 - its scheduled job, if any
 
 Apps can also name themselves with an `X-Agent-Client` header, or with `AGENT_CLIENT` for
@@ -229,27 +264,59 @@ its other arguments or the request's contents.
 ### Adding a feature
 
 Every feature is one entry in the `API` list in [agent.mjs](agent.mjs): its REST route,
-inputs and handler, plus an `mcp` block if Claude should get it as a tool. The REST
+inputs and handler, plus an `mcp` block if agents should get it as a tool. The REST
 routing, the MCP tool list and `/openapi.json` are generated from that list, so every
 MCP tool always has a matching REST endpoint, and `agent-tools <id> key=value` calls it.
-Mention the feature in [AGENTS.MD](AGENTS.MD).
+Mention the feature in [container/AGENTS.md](container/AGENTS.md).
 
-### MCP for Claude sessions
+### MCP for agent sessions
 
-The same tools are an MCP server at `http://127.0.0.1:7777/mcp`, named `agent-tools`,
-with the tools `notify`, `email`, `get_config` and `list_config`. The container registers it in
-Claude's user config (`config/claude/.claude.json`) on every start, so all sessions get
-it and its usage instructions automatically, and you can still add your own MCP servers.
-Check it with:
+The same tools are an MCP server at `http://127.0.0.1:7777/mcp`, named `agent-tools`, with
+a tool for each API feature that has an `mcp` block (`GET /` shows which). It works with any
+agent tool that supports MCP over HTTP. The container registers it with the current agent tool
+on every start (see [Agent tool: Claude Code](#agent-tool-claude-code)), so every session gets
+the tools and their usage instructions, and you can still add your own MCP servers.
+
+## Agent tool: Claude Code
+
+Everything else in this container is agent-tool neutral: the tools API and MCP server,
+scheduling, logs, usage tracking and both `AGENTS.md` files. Only these parts tie it to
+Claude Code today, and moving to another agent tool means replacing them:
+
+| Claude Code specific | Where |
+| --- | --- |
+| Remote Control: sessions in claude.ai/code and the Claude apps, the session link, the y/n prompt | `agent.mjs`, `runRemoteControl` |
+| The claude.ai login relayed over Telegram, its renewal, and the health check (`claude -p`) | `agent.mjs`, `loginFlow` and `watchdog` |
+| Trusting `/workspace` | `agent.mjs`, `ensureWorkspaceTrusted` |
+| Registering the MCP server in Claude's user config | `agent.mjs`, `registerMcpServer` |
+| Login, settings and history in `config/claude` (`CLAUDE_CONFIG_DIR`) | `Dockerfile` |
+| `container/AGENTS.md` installed as `/etc/claude-code/CLAUDE.md` | `Dockerfile` |
+
+Check the MCP registration with:
 
 ```bash
 docker exec claude claude mcp list
 ```
 
-## Instructions for Claude
+## Instructions for agents
 
-[AGENTS.MD](AGENTS.MD) is installed as `/etc/claude-code/CLAUDE.md`, so every
-session in the container loads it. It points Claude at `/workspace/AGENTS.md`.
+There are two instruction files, for two different jobs:
+
+| File | For | In the image |
+| --- | --- | --- |
+| [container/AGENTS.md](container/AGENTS.md) | The agent *inside* the container: starting projects, the tools, scheduling | Yes, installed where the agent tool loads it for every session. It points the agent at `/workspace/AGENTS.md` for your own rules. |
+| [AGENTS.md](AGENTS.md) | Coding agents *maintaining this repository*: layout, rules, testing | No |
+
+## Working on this repository
+
+Issues are worked on with the SDD flow in [docs/sdd-flow.md](docs/sdd-flow.md). Tell an
+agent "work on issue #12". It then:
+
+1. triages the issue: a small bug, or the full path
+2. tracks each step as a sub-issue of the reported issue: a functional spec, a technical
+   spec and the implementation, or a single fix plan for a small bug
+3. waits for you to comment "approved" on each step before starting the next
+4. opens a pull request that closes the issue when you merge it
 
 ## Troubleshooting
 

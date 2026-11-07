@@ -1,5 +1,5 @@
 # AGENTS.md
-You are an agent proxy for working with Claude remote in a container. This file just bootstraps the flow, read ## Main instructions for more details.
+You are an agent running in a container on the owner's NAS, used remotely. This file just bootstraps the flow, read ## Main instructions for more details.
  
 ## Main instructions
 Always load the AGENTS.md file in /workspace, this is mounted to the main workspace folder where further instructions are carried out.
@@ -28,7 +28,7 @@ The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials
 ## Tools service
 The container runs a tools service with two front doors over the same functions:
 
-- **You (Claude) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) the log tools (`list_logs`, `get_log`) and `get_usage`. They are connected in every session automatically. Use them directly instead of calling the HTTP API with curl.
+- **You (the agent) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) the log tools (`list_logs`, `get_log`) and `get_usage`. They are connected automatically. Use them directly instead of calling the HTTP API with curl.
 - **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
 Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To see what's available, read `$AGENT_TOOLS_URL/openapi.json` (an OpenAPI 3.1 description; endpoints marked `x-mcp-tool` are also MCP tools), `GET $AGENT_TOOLS_URL/` for a short list, or run `agent-tools api`. Check it rather than relying only on the table below, which may lag behind new features.
@@ -81,13 +81,6 @@ Rules:
 - Use `/email` for longer content the owner wants by mail (reports, digests), and `/notify` for short alerts. Never add your own SMTP code or ask for mail credentials.
 - Leave `to` out to mail the owner. Only send to other people when the owner asked for it. If the owner restricted recipients with `MAIL_ALLOWED_TO` and a send is refused, ask them to add the address instead of working around it.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
-
-## Changing the tools service itself
-If you're working on this container's own code (`agent.mjs` in the agent-container repo), follow the COMPATIBILITY RULES next to the API registry in `agent.mjs`: existing endpoints and MCP tools are only ever extended, never broken.
-
-- Never make a breaking change on your own: removing or renaming an endpoint, tool, input or response field, changing a type, or making an optional input required. If a change would do that, stop and ask the owner whether it's intended, and suggest adding a `/v2/...` version next to the old one instead.
-- Before deprecating or removing anything, check `GET /usage` to see who still calls it, and tell the owner.
-- CI compares the API with main's on every pull request and fails on a breaking change.
 
 ## Scheduled jobs
 When something should run regularly (a daily script, a check every 15 minutes), schedule it with `add_schedule` (or `POST /schedules`). Never use crontab, systemd timers, `at` or a sleep loop: they don't survive container updates, and nobody would see their failures.
