@@ -24,8 +24,8 @@ That's agent-container.
   Claude Desktop through Remote Control. No ports to open and no VPN.
 - **No SSH, ever.** Logging in, and renewing the login before it expires, happens over
   Telegram: the bot sends a link, you reply with the code.
-- **No lock-in.** The instructions (`AGENTS.md`), the tools, scheduling and your projects are
-  agent-tool neutral. Everything tied to Claude Code is listed in one place
+- **No lock-in.** The instructions (`AGENTS.md`), the tools, scheduling and your projects don't
+  depend on the agent tool. Everything tied to Claude Code is listed in one place
   ([Agent tool: Claude Code](#agent-tool-claude-code)), so moving to another tool is a
   contained job.
 - **Building blocks for every app.** One local API, also available to agents as MCP tools:
@@ -36,9 +36,10 @@ That's agent-container.
 - **Repeatable patterns.** Say "Hi, I want to start a new project" and the agent sets it up
   the same way every time: its own folder, its own `AGENTS.md`, Node.js, git, and the shared
   tools.
-- **Native spec-driven development.** A built-in SDD flow takes app work from GitHub issue to
-  reviewed pull request, communicating with you through GitHub issues, comments and approvals.
-  Turn it on per app; the agent triages, writes specs and implements one approved step at a time.
+- **Native spec-driven development, driven entirely from GitHub.** Once enabled for an app,
+  take work from issue to reviewed pull request using GitHub issues, comments and approvals—
+  no Claude app or agent chat needed to drive the flow. The container runs the configured agent
+  in the background; you steer and review the work in GitHub.
 - **Built to last.** The tools API never breaks. CI flags any incompatible change, and new
   behaviour arrives as `/v2/`, next to the old version.
 
@@ -284,15 +285,20 @@ the tools and their usage instructions, and you can still add your own MCP serve
 ## Issue flow
 
 The container includes a **native spec-driven development (SDD) flow** for workspace apps.
-It communicates through GitHub issues: an issue is the request, sub-issues hold reviewable
-specification and implementation steps, and comments carry feedback and answers. The watcher
-checks GitHub on a schedule and runs an agent only when a step is due. See the
-[spec-driven playbook](container/sdd-flow.md). Turn it on per app by asking the agent:
+After the one-time setup and enablement, you can drive the process end to end from GitHub—
+without opening Claude, using an agent chat, or issuing commands elsewhere. Open an issue,
+review the generated sub-issues, give feedback in comments, approve steps by closing their
+sub-issues, and merge the final pull request. The container's watcher runs the configured agent
+in the background and keeps the flow moving. GitHub is your interface; the agent tool is an
+implementation detail. See the [spec-driven playbook](container/sdd-flow.md).
+
+To enable the flow for an app, ask the agent or use the issue-flow API once:
 
 > Turn on the issue flow for price-watcher
 
-The app needs a GitHub repository as its `origin`. From then on, every new issue you open
-there goes through these steps, each one a sub-issue for you to review:
+After it is enabled, your day-to-day participation is entirely in GitHub. The app needs a
+GitHub repository as its `origin`. Each new issue you open there goes through these steps,
+each one a sub-issue for you to review:
 
 - **Small bug:** a fix plan, then the implementation
 - **Everything else:** a functional spec, then a technical spec, then the implementation
