@@ -36,9 +36,9 @@ That's agent-container.
 - **Repeatable patterns.** Say "Hi, I want to start a new project" and the agent sets it up
   the same way every time: its own folder, its own `AGENTS.md`, Node.js, git, and the shared
   tools.
-- **Issues that move by themselves.** Turn on the [issue flow](#issue-flow) for an app, and
-  every issue you open is triaged, specced and implemented step by step, while you only
-  comment, approve and merge on GitHub.
+- **Native spec-driven development.** A built-in SDD flow takes app work from GitHub issue to
+  reviewed pull request, communicating with you through GitHub issues, comments and approvals.
+  Turn it on per app; the agent triages, writes specs and implements one approved step at a time.
 - **Built to last.** The tools API never breaks. CI flags any incompatible change, and new
   behaviour arrives as `/v2/`, next to the old version.
 
@@ -49,7 +49,7 @@ The image is built by GitHub Actions and published to `ghcr.io/emilw/agent-conta
 
 | Container path | Mount | Holds |
 | --- | --- | --- |
-| `/config` | an empty folder on the NAS | `agent.env` (the central config: container settings and values for your own programs, created on first start from [agent.env.example](agent.env.example)) and `claude/` (the agent tool's login, settings and history) |
+| `/config` | an empty folder on the NAS | `agent.env` (the central config: container settings and values for your own programs, created on first start from [agent.env.example](agent.env.example)) |
 | `/workspace` | your repos folder | the code the agent works on; its `AGENTS.md` holds the main instructions |
 
 The container runs as uid 1000, so both folders must be writable by it. `/config` is
@@ -283,9 +283,11 @@ the tools and their usage instructions, and you can still add your own MCP serve
 
 ## Issue flow
 
-The container can take the GitHub issues of your workspace apps from report to pull request,
-using the spec-driven playbook in [container/sdd-flow.md](container/sdd-flow.md). Turn it on
-per app by asking the agent:
+The container includes a **native spec-driven development (SDD) flow** for workspace apps.
+It communicates through GitHub issues: an issue is the request, sub-issues hold reviewable
+specification and implementation steps, and comments carry feedback and answers. The watcher
+checks GitHub on a schedule and runs an agent only when a step is due. See the
+[spec-driven playbook](container/sdd-flow.md). Turn it on per app by asking the agent:
 
 > Turn on the issue flow for price-watcher
 
@@ -296,6 +298,24 @@ there goes through these steps, each one a sub-issue for you to review:
 - **Everything else:** a functional spec, then a technical spec, then the implementation
 
 The implementation ends with a pull request that closes the issue.
+
+```mermaid
+flowchart TD
+    report["You open a GitHub issue"] --> triage["Agent triages the request"]
+    triage --> kind{"Small bug?"}
+    kind -- Yes --> fixplan["Fix plan sub-issue"]
+    kind -- No --> func["Functional spec sub-issue"]
+    func --> approve1["You review and approve<br/>by closing the sub-issue"]
+    approve1 --> tech["Technical spec sub-issue"]
+    tech --> approve2["You review and approve<br/>by closing the sub-issue"]
+    fixplan --> approveFix["You review and approve<br/>by closing the sub-issue"]
+    approveFix --> implement["Agent implements"]
+    approve2 --> implement
+    implement --> pr["Pull request"]
+    pr --> feedback["You comment on GitHub;<br/>agent revises after quiet period"]
+    feedback --> merge["You merge"]
+    merge --> done["Issue closed; flow done"]
+```
 
 ### Your part
 
@@ -364,7 +384,7 @@ There are two instruction files, for two different jobs:
 
 | File | For | In the image |
 | --- | --- | --- |
-| [container/AGENTS.md](container/AGENTS.md) | The agent *inside* the container: starting projects, the tools, scheduling | Yes, installed where the agent tool loads it for every session. It points the agent at `/workspace/AGENTS.md` for your own rules. |
+| [container/AGENTS.md](container/AGENTS.md) | The agent *inside* the container: starting projects, the tools, scheduling | Yes, installed where the agent tool loads it for every session. It points to the relevant playbook. |
 | [AGENTS.md](AGENTS.md) | Coding agents *maintaining this repository*: layout, rules, testing | No |
 
 ## Working on this repository
