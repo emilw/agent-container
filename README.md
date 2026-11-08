@@ -174,13 +174,15 @@ Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777
   Port 587 uses STARTTLS, 465 TLS.
 - `GET /config/<KEY>` returns a value from `config/agent.env`; `GET /config` lists the keys
 - `/schedules` runs commands on a schedule, and `/logs` serves the logs (see below)
+- `GET /version` says which build is running: the commit, branch and build time. Ask the agent
+  "version?" and it answers from this.
 - `/issue-flow` turns the [issue flow](#issue-flow) on and off per app and shows its state
 
 Every key in `agent.env` is served except `TELEGRAM_TOKEN`, `GH_TOKEN` and `SMTP_PASS`. Value changes apply
 immediately; the container's own settings still need a restart.
 
 Shell scripts use `agent-tools`: `agent-tools notify "..."`, `agent-tools email ...`,
-`agent-tools config KEY`, `agent-tools logs [NAME]`, and any endpoint by its name, e.g.
+`agent-tools config KEY`, `agent-tools logs [NAME]`, `agent-tools version`, and any endpoint by its name, e.g.
 `agent-tools run_schedule name=news`. `agent-tools api` lists them.
 [container/AGENTS.md](container/AGENTS.md) tells the agent how to use all of this.
 
