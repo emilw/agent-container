@@ -37,7 +37,11 @@ jobs:
           context: .
           load: true
           tags: agent-container:pr
-          build-args: CLAUDE_CODE_VERSION=${{ steps.ver.outputs.version }}
+          build-args: |
+            CLAUDE_CODE_VERSION=${{ steps.ver.outputs.version }}
+            GIT_COMMIT=${{ github.event.pull_request.head.sha || github.sha }}
+            GIT_REF=${{ github.head_ref || github.ref_name }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
 
       - name: Check the tools API stays backwards compatible with main
@@ -71,7 +75,11 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          build-args: CLAUDE_CODE_VERSION=${{ steps.ver.outputs.version }}
+          build-args: |
+            CLAUDE_CODE_VERSION=${{ steps.ver.outputs.version }}
+            GIT_COMMIT=${{ github.event.pull_request.head.sha || github.sha }}
+            GIT_REF=${{ github.head_ref || github.ref_name }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}

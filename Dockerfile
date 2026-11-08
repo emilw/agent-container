@@ -37,6 +37,18 @@ COPY --chmod=755 agent-tools agent-run /usr/local/bin/
 # Only container/AGENTS.md: the repo-root AGENTS.md and docs/ are about maintaining this image.
 COPY --chmod=755 container/AGENTS.md /etc/claude-code/CLAUDE.md
 
+# Which build this is, for get_version (GET /version). CI passes the commit; a local build can
+# pass --build-arg GIT_COMMIT=$(git rev-parse HEAD). Declared last, so a new commit only
+# rebuilds this layer.
+ARG GIT_COMMIT=unknown
+ARG GIT_REF=
+ARG SOURCE_URL=
+RUN node -e 'const e = process.env; \
+      const tool = require("/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json"); \
+      console.log(JSON.stringify({ commit: e.GIT_COMMIT, ref: e.GIT_REF || null, source: e.SOURCE_URL || null, \
+        builtAt: new Date().toISOString(), agentTool: { name: "claude-code", version: tool.version } }, null, 2))' \
+      > /opt/agent/version.json
+
 RUN mkdir -p /config /workspace && chown node:node /config /workspace
 
 USER node

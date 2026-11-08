@@ -28,7 +28,7 @@ The GitHub CLI (`gh`) is installed, and `git` uses it for github.com credentials
 ## Tools service
 The container runs a tools service with two front doors over the same functions:
 
-- **You (the agent) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) the log tools (`list_logs`, `get_log`) and `get_usage`. They are connected automatically. Use them directly instead of calling the HTTP API with curl.
+- **You (the agent) use the `agent-tools` MCP tools:** `notify`, `email`, `get_config`, `list_config`, the schedule tools (`add_schedule`, `list_schedules`, `run_schedule`, `remove_schedule`) the log tools (`list_logs`, `get_log`), `get_usage` and `get_version`. They are connected automatically. Use them directly instead of calling the HTTP API with curl.
 - **Programs you build in /workspace use the HTTP API below.** They can't use MCP. Use it instead of adding your own Telegram code or hardcoding configuration values.
 
 Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To see what's available, read `$AGENT_TOOLS_URL/openapi.json` (an OpenAPI 3.1 description; endpoints marked `x-mcp-tool` are also MCP tools), `GET $AGENT_TOOLS_URL/` for a short list, or run `agent-tools api`. Check it rather than relying only on the table below, which may lag behind new features.
@@ -45,6 +45,7 @@ Every MCP tool is also an HTTP endpoint, with the same behaviour and limits. To 
 | `GET /schedules`, `POST /schedules`, `DELETE /schedules/<name>`, `POST /schedules/<name>/run` | List, add or replace, remove and test-run scheduled jobs. See "Scheduled jobs" below. |
 | `GET /logs`, `GET /logs/<name>?lines=100` | List the logs and read the end of one: `agent`, or a scheduled job's name. |
 | `GET /usage?operation=<id>` | Shows who calls each endpoint and tool: apps, jobs, projects, how often and when last. |
+| `GET /version` | Which build of the container is running: commit, branch, build time. |
 | `GET /health` | Checks the service is up, and whether Telegram is configured. |
 | `GET /openapi.json` | Describes every endpoint, its inputs and its responses. |
 | `GET /` | Lists the endpoints, and which are also MCP tools. |
@@ -81,6 +82,9 @@ Rules:
 - Use `/email` for longer content the owner wants by mail (reports, digests), and `/notify` for short alerts. Never add your own SMTP code or ask for mail credentials.
 - Leave `to` out to mail the owner. Only send to other people when the owner asked for it. If the owner restricted recipients with `MAIL_ALLOWED_TO` and a send is refused, ask them to add the address instead of working around it.
 - Notifications go to the owner's phone: send them for things the owner asked to hear about, not for debugging.
+
+## Version
+When the owner asks which version is running ("version?", "what version are you on?"), they mean this container's build, not the agent tool's or the model's. Call `get_version` and answer with the short commit id, the branch and the build time, with the commit link if there is one. Mention the agent tool's version only if they ask for it.
 
 ## Scheduled jobs
 When something should run regularly (a daily script, a check every 15 minutes), schedule it with `add_schedule` (or `POST /schedules`). Never use crontab, systemd timers, `at` or a sleep loop: they don't survive container updates, and nobody would see their failures.

@@ -922,6 +922,22 @@ const issueFlow = createIssueFlow({
   defaultAgentCommand: SDD_DEFAULT_AGENT_COMMAND,
 });
 
+// Which build is running: written into the image at build time (see the Dockerfile). Outside
+// the image, or for an older image, the fields are null.
+function versionInfo() {
+  let v = {};
+  try { v = JSON.parse(readFileSync(new URL("./version.json", import.meta.url), "utf8")); } catch {}
+  const commit = v.commit && v.commit !== "unknown" ? v.commit : null;
+  return {
+    commit,
+    shortCommit: commit?.slice(0, 7) ?? null,
+    ref: v.ref ?? null,
+    builtAt: v.builtAt ?? null,
+    commitUrl: commit && v.source ? `${v.source}/commit/${commit}` : null,
+    agentTool: v.agentTool ?? null,
+  };
+}
+
 const API = [
   {
     id: "health",
@@ -930,6 +946,31 @@ const API = [
     summary: "Check the service is up, and whether Telegram is configured.",
     response: { telegram: { type: "boolean" } },
     run: () => [200, { ok: true, telegram }],
+  },
+  {
+    id: "get_version",
+    method: "GET",
+    path: "/version",
+    summary: "Which build of the container is running: the git commit it was built from, the branch, when it was built, and the agent tool's version.",
+    response: {
+      commit: { type: ["string", "null"], description: "Full commit id, or null if the image was built without one" },
+      shortCommit: { type: ["string", "null"] },
+      ref: { type: ["string", "null"], description: "Branch the image was built from" },
+      builtAt: { type: ["string", "null"], description: "Build time, ISO 8601" },
+      commitUrl: { type: ["string", "null"] },
+      agentTool: { type: ["object", "null"], description: "The agent tool in the image: { name, version }" },
+    },
+    run: () => [200, { ok: true, ...versionInfo() }],
+    mcp: {
+      description: "Which version of the container is running: the commit it was built from, the branch, the build time and the agent tool's version. Use it when the owner asks which version is running.",
+      result: (b) => [
+        `Commit: ${b.commit ?? "unknown (built without a commit id)"}`,
+        b.commitUrl && `Link: ${b.commitUrl}`,
+        b.ref && `Branch: ${b.ref}`,
+        b.builtAt && `Built: ${b.builtAt}`,
+        b.agentTool && `Agent tool: ${b.agentTool.name} ${b.agentTool.version}`,
+      ].filter(Boolean).join("\n"),
+    },
   },
   {
     id: "notify",
@@ -1294,6 +1335,7 @@ const MCP_INSTRUCTIONS = `Tools provided by the container this session runs in, 
 - get_config / list_config: read values from the owner's central config (agent.env). Use these for URLs, account names and other settings instead of asking the owner or hardcoding values. If a needed key is missing, tell the owner the exact key name to add; never invent a value. Bot and GitHub tokens are never returned.
 - add_schedule / list_schedules / run_schedule / remove_schedule: run a command regularly, such as a project's daily script. Use these instead of crontab, systemd or a sleep loop. After adding a job, test it with run_schedule and check get_log. By default the owner gets a Telegram message only when a run fails.
 - list_logs / get_log: read the container's logs, 'agent' and one per scheduled job, to troubleshoot.
+- get_version: which build of the container is running (commit, branch, build time). Use it whenever the owner asks for the version.
 - issue_flow_status / enable_issue_flow / disable_issue_flow / check_issue_flow: the issue flow, which takes a workspace app's GitHub issues through specs, approval and a pull request automatically (playbook: /opt/agent/sdd-flow.md). Turn it on when the owner asks; each app's runs log to sdd-<app>.
 Every tool is also a REST endpoint at $AGENT_TOOLS_URL, described by $AGENT_TOOLS_URL/openapi.json. Programs you write in /workspace can't use MCP, so they must call those endpoints instead.`;
 
@@ -1421,6 +1463,10 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
   });
 }
 
+{
+  const v = versionInfo();
+  log(`Container version ${v.shortCommit ?? "unknown"}${v.ref ? ` (${v.ref})` : ""}${v.builtAt ? `, built ${v.builtAt}` : ""}`);
+}
 startToolsServer();
 clearStaleJobStates();
 startScheduler();
