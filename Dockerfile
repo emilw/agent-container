@@ -30,7 +30,7 @@ ENV DISABLE_AUTOUPDATER=1 \
     GH_CONFIG_DIR=/config/gh \
     AGENT_TOOLS_URL=http://127.0.0.1:7777     TZ=Europe/Stockholm
 
-COPY --chmod=755 agent.mjs smtp.mjs tmux.conf agent.env.example /opt/agent/
+COPY --chmod=755 agent.mjs smtp.mjs sdd.mjs tmux.conf agent.env.example container/sdd-flow.md /opt/agent/
 COPY --chmod=755 agent-tools agent-run /usr/local/bin/
 
 # Instructions for every Claude session in the container (managed CLAUDE.md location on Linux).

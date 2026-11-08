@@ -36,6 +36,9 @@ That's agent-container.
 - **Repeatable patterns.** Say "Hi, I want to start a new project" and the agent sets it up
   the same way every time: its own folder, its own `AGENTS.md`, Node.js, git, and the shared
   tools.
+- **Issues that move by themselves.** Turn on the [issue flow](#issue-flow) for an app, and
+  every issue you open is triaged, specced and implemented step by step, while you only
+  comment, approve and merge on GitHub.
 - **Built to last.** The tools API never breaks. CI flags any incompatible change, and new
   behaviour arrives as `/v2/`, next to the old version.
 
@@ -170,6 +173,7 @@ Programs you build in `/workspace` can use a small API on `http://127.0.0.1:7777
   Port 587 uses STARTTLS, 465 TLS.
 - `GET /config/<KEY>` returns a value from `config/agent.env`; `GET /config` lists the keys
 - `/schedules` runs commands on a schedule, and `/logs` serves the logs (see below)
+- `/issue-flow` turns the [issue flow](#issue-flow) on and off per app and shows its state
 
 Every key in `agent.env` is served except `TELEGRAM_TOKEN`, `GH_TOKEN` and `SMTP_PASS`. Value changes apply
 immediately; the container's own settings still need a restart.
@@ -277,6 +281,61 @@ agent tool that supports MCP over HTTP. The container registers it with the curr
 on every start (see [Agent tool: Claude Code](#agent-tool-claude-code)), so every session gets
 the tools and their usage instructions, and you can still add your own MCP servers.
 
+## Issue flow
+
+The container can take the GitHub issues of your workspace apps from report to pull request,
+using the spec-driven playbook in [container/sdd-flow.md](container/sdd-flow.md). Turn it on
+per app by asking the agent:
+
+> Turn on the issue flow for price-watcher
+
+The app needs a GitHub repository as its `origin`. From then on, every new issue you open
+there goes through these steps, each one a sub-issue for you to review:
+
+- **Small bug:** a fix plan, then the implementation
+- **Everything else:** a functional spec, then a technical spec, then the implementation
+
+The implementation ends with a pull request that closes the issue.
+
+### Your part
+
+| To | Do |
+| --- | --- |
+| Start | Open an issue. For an issue opened before the flow was on, or by someone without write access, add the `sdd` label. |
+| Give feedback | Comment on the sub-issue or the pull request. The agent revises once you've been quiet for a check interval. |
+| Approve a step | Close its sub-issue as **completed** |
+| Reject a step | Close its sub-issue as **not planned**, which stops the flow |
+| Unblock | Fix or answer what the status comment says, then remove the `sdd: blocked` label |
+| Finish | Merge the pull request. The agent never merges. |
+| Skip the wait | "Continue on issue #N" in an agent session, or `check_issue_flow` |
+
+A **status comment** at the top of each issue always shows the current step, with a line
+like "Writing the technical spec, started 14:05" while an agent works on it. You get a
+Telegram message when a step is ready for review or something is blocked. When you merge,
+the issue and its sub-issues are closed as completed, and the status comment says "Done".
+
+Only comments and labels from people with write access to the repository count, so on a public
+repository strangers can't start or steer anything.
+
+### Cost
+
+Checking costs no tokens. Every `SDD_CHECK_MINUTES` (default 15), plain code in the container
+asks GitHub what changed. An unchanged repository gets GitHub's "not modified" answer, which
+doesn't count against the rate limit. An agent run only starts when a step is due, and each
+run does exactly one step. Two caps protect your plan's usage limits:
+
+- `SDD_MAX_RUNS_PER_DAY`, default 30
+- `SDD_MAX_RUNS_PER_ISSUE`, default 10
+
+Reaching either blocks the issue with the reason. Runs log to `sdd-<app>`
+(`agent-tools logs sdd-price-watcher`). Implementation runs work in a separate git worktree
+under `/workspace/.sdd-worktrees`, so your own checkout of the app is never touched.
+
+GitHub access uses the existing `gh` login (see [GitHub](#github)). The state is kept in
+`config/state/sdd/`, and the list of watched apps in `config/sdd.json`. If the state is lost,
+it's rebuilt from the issues without starting any runs. `GET /issue-flow`
+(`issue_flow_status`) shows every app and issue.
+
 ## Agent tool: Claude Code
 
 Everything else in this container is agent-tool neutral: the tools API and MCP server,
@@ -289,6 +348,7 @@ Claude Code today, and moving to another agent tool means replacing them:
 | The claude.ai login relayed over Telegram, its renewal, and the health check (`claude -p`) | `agent.mjs`, `loginFlow` and `watchdog` |
 | Trusting `/workspace` | `agent.mjs`, `ensureWorkspaceTrusted` |
 | Registering the MCP server in Claude's user config | `agent.mjs`, `registerMcpServer` |
+| The issue flow's default run command, `claude -p` (`SDD_AGENT_COMMAND` replaces it) | `agent.mjs`, `SDD_DEFAULT_AGENT_COMMAND` |
 | Login, settings and history in `config/claude` (`CLAUDE_CONFIG_DIR`) | `Dockerfile` |
 | `container/AGENTS.md` installed as `/etc/claude-code/CLAUDE.md` | `Dockerfile` |
 
@@ -309,13 +369,15 @@ There are two instruction files, for two different jobs:
 
 ## Working on this repository
 
-Issues are worked on with the SDD flow in [docs/sdd-flow.md](docs/sdd-flow.md). Tell an
-agent "work on issue #12". It then:
+This repository's issues use the same playbook as the [issue flow](#issue-flow),
+[container/sdd-flow.md](container/sdd-flow.md), but by hand, since no container watches this
+repository. Tell an agent "work on issue #12", and after each approval "continue on issue
+#12". It then:
 
 1. triages the issue: a small bug, or the full path
 2. tracks each step as a sub-issue of the reported issue: a functional spec, a technical
-   spec and the implementation, or a single fix plan for a small bug
-3. waits for you to comment "approved" on each step before starting the next
+   spec and the implementation, or a fix plan and the implementation for a small bug
+3. waits for you to close each step's sub-issue as completed before starting the next
 4. opens a pull request that closes the issue when you merge it
 
 ## Troubleshooting
