@@ -100,5 +100,7 @@ The container can take a workspace app's GitHub issues through specs, approval a
 - The container checks GitHub every `SDD_CHECK_MINUTES` (default 15) without using an agent, and starts one agent run per step that's due. Each run's output is in the log `sdd-<app>`.
 - New issues from the owner start automatically; older issues, or issues from people without write access, start when the owner adds the `sdd` label.
 - The owner gives feedback by commenting, approves a step by closing its sub-issue as completed, and merges the pull request. `sdd: blocked` and the status comment on the issue say when something needs the owner.
+- The owner can go back a step by reopening an earlier spec; the pull request is then reworked, not replaced.
+- `implementer: "copilot"` has GitHub Copilot do the implementation instead of the container's agent. Only set it when the owner asks for Copilot; it needs a Copilot plan with the coding agent. Comments mentioning `@copilot` are always Copilot's, never yours to act on.
 - When the owner asks you by hand to work on or continue an issue, follow the same playbook.
 - Mention it in the app's `AGENTS.md` when it's on, and add anything a run needs to know there (how to build and test the app).

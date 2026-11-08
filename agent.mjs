@@ -1090,7 +1090,7 @@ const API = [
       result: (body) => !body.apps.length ? "The issue flow isn't on for any app." : [
         `Runs today: ${body.runsToday}/${body.maxRunsPerDay}. Checks every ${body.checkMinutes} min.`,
         body.running ? `Running: ${body.running.app} #${body.running.issue} (${body.running.kind}) since ${body.running.since}` : "Nothing running.",
-        ...body.apps.map((a) => `\n${a.app} (${a.repo}), last check ${a.lastCheck ?? "not yet"}:` +
+        ...body.apps.map((a) => `\n${a.app} (${a.repo}, implemented by ${a.implementer ?? "agent"}), last check ${a.lastCheck ?? "not yet"}:` +
           (a.issues.map((i) => `\n  #${i.issue} ${i.title}: ${i.step}, ${i.status} (${i.runs} run(s)) ${i.url}`).join("") || "\n  no open issues in the flow")),
       ].join("\n"),
     },
@@ -1100,13 +1100,16 @@ const API = [
     method: "POST",
     path: "/issue-flow/apps",
     summary: "Turn the issue flow on for a workspace app: its GitHub issues are taken through the SDD playbook automatically. Reads the repo from the folder's origin remote and creates the labels sdd and \"sdd: blocked\".",
-    input: { app: { type: "string", description: "Folder name in /workspace, e.g. price-watcher" } },
+    input: {
+      app: { type: "string", description: "Folder name in /workspace, e.g. price-watcher" },
+      implementer: { type: "string", enum: ["agent", "copilot"], description: "Who implements approved specs: the container's agent (default), or GitHub Copilot's coding agent, which needs a Copilot plan with it enabled. Specs are always written by the container's agent. Calling again changes it." },
+    },
     required: ["app"],
     response: { updated: { type: "boolean" }, app: { type: "object" } },
     run: (input) => issueFlow.enable(input),
     mcp: {
-      description: "Turn the issue flow on for a workspace app (\"turn on the issue flow for price-watcher\"). New issues by the owner in its GitHub repo then get triaged, specced and implemented step by step, with the owner approving each step on GitHub. The app needs a GitHub origin remote.",
-      result: (body) => `The issue flow is on for ${body.app.app} (${body.app.repo}). New issues there are picked up at the next check; issues opened earlier start when they get the sdd label.`,
+      description: "Turn the issue flow on for a workspace app (\"turn on the issue flow for price-watcher\"). New issues by the owner in its GitHub repo then get triaged, specced and implemented step by step, with the owner approving each step on GitHub. The app needs a GitHub origin remote. Set implementer to copilot only when the owner asks for GitHub Copilot to do the implementation.",
+      result: (body) => `The issue flow is on for ${body.app.app} (${body.app.repo}), implemented by ${body.app.implementer === "copilot" ? "GitHub Copilot" : "the container's agent"}. New issues there are picked up at the next check; issues opened earlier start when they get the sdd label.`,
     },
   },
   {

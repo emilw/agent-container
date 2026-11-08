@@ -28,9 +28,9 @@ the repository's own `AGENTS.md` too, for how to build and test it.
 | The `sdd: blocked` label | Something needs the owner; the status comment says what |
 
 The owner gives feedback by commenting, approves by closing a sub-issue as completed, rejects
-by closing it as not planned, and merges the pull request. **Only the owner does those.**
-Never close, approve or reject a sub-issue yourself, never merge, and never start the next
-step before the current one is approved.
+by closing it as not planned, goes back a step by reopening an earlier sub-issue, and merges
+the pull request. **Only the owner does those.** Never close, approve or reject a sub-issue
+yourself, never merge, and never start the next step before the current one is approved.
 
 ## 1. Start: read and resume
 
@@ -49,6 +49,7 @@ step before the current one is approved.
 | Fix plan or technical spec closed as completed | Implementation |
 | An open pull request with new comments | Revise the pull request |
 | The newest closed as not planned | Nothing: the flow stopped |
+| An earlier spec reopened while a later step exists | Going back: see [Going back a step](#going-back-a-step) |
 
 ## 2. Triage
 
@@ -174,10 +175,43 @@ the owner it's ready, with a link.
 3. Push the branch, and open a pull request whose description:
    - summarises what changed and how it was tested, and what couldn't be tested
    - says `Closes #<n>` and `Closes #<implementation sub-issue>`, so merging closes both
-4. Feedback on the pull request comes as comments; update the branch, push, and reply with
-   what changed.
+4. Feedback on the pull request comes as comments, inline comments and review summaries;
+   update the branch, push, and reply with what changed.
+5. **Keep the spec in sync.** When feedback changes the design rather than only the code,
+   also update the technical spec or fix plan body, even though it's closed. Add a short
+   "Changed during implementation" section saying what changed and why, so the closed spec
+   still describes what was built.
 
 The owner reviews and merges. Never merge yourself.
+
+## Going back a step
+
+When the implementation shows that a spec was wrong, the owner reopens that spec's sub-issue
+instead of starting over. Reopening a closed fix plan, functional spec or technical spec while
+a later step exists means "go back to this step". The pull request is kept and updated, not
+replaced, so the earlier review stays in one place.
+
+1. While a spec is reopened, the owner's comments on it are feedback for that spec. Revise it
+   as in [4. Review and feedback](#4-review-and-feedback), and leave the pull request alone.
+2. The owner approves it again by closing it as completed:
+   - **Technical spec or fix plan:** rework the existing branch and pull request to match the
+     revised spec, tick the implementation checklist again, push, and reply on the pull
+     request with what changed. Don't open a new pull request.
+   - **Functional spec:** reopen the technical spec and revise it to match. Reopening isn't
+     approving, so that's yours to do. The owner then approves the technical spec, which leads
+     to the rework.
+3. Closed as not planned instead: the flow stops, and the owner decides about the pull
+   request.
+
+## Copilot
+
+GitHub Copilot can work in the same repository, so stay out of its way:
+
+- A comment that mentions `@copilot` is for Copilot. Don't act on it, even when it's from the
+  owner.
+- When the app's issue flow is set to have Copilot implement, the container assigns the issue
+  to Copilot after the spec is approved, and Copilot opens and updates the pull request. The
+  owner gives it feedback with `@copilot` comments. Specs are still written as above.
 
 ## Comments and the status comment
 

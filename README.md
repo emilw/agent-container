@@ -328,9 +328,10 @@ flowchart TD
 | To | Do |
 | --- | --- |
 | Start | Open an issue. For an issue opened before the flow was on, or by someone without write access, add the `sdd` label. |
-| Give feedback | Comment on the sub-issue or the pull request. The agent revises once you've been quiet for a check interval. |
+| Give feedback | Comment on the sub-issue or the pull request, inline or in a review. The agent revises once you've been quiet for a check interval. |
 | Approve a step | Close its sub-issue as **completed** |
 | Reject a step | Close its sub-issue as **not planned**, which stops the flow |
+| Go back a step | Reopen an earlier spec and comment. Closing it again reworks the same pull request to match. |
 | Unblock | Fix or answer what the status comment says, then remove the `sdd: blocked` label |
 | Finish | Merge the pull request. The agent never merges. |
 | Skip the wait | "Continue on issue #N" in an agent session, or `check_issue_flow` |
@@ -342,6 +343,23 @@ the issue and its sub-issues are closed as completed, and the status comment say
 
 Only comments and labels from people with write access to the repository count, so on a public
 repository strangers can't start or steer anything.
+
+When PR feedback changes the design rather than only the code, the agent also updates the
+closed spec with a "Changed during implementation" section, so the specs stay a true record of
+what was built. For bigger changes, go back a step instead.
+
+### GitHub Copilot
+
+Comments that mention `@copilot` are always left to Copilot, so the container's agent and
+Copilot never act on the same comment. You can also have Copilot do the implementation:
+
+> Turn on the issue flow for price-watcher, with Copilot implementing
+
+The container's agent still triages and writes the specs. Once you approve the plan, the issue
+is assigned to Copilot, which opens the pull request. You then give feedback there with
+`@copilot` comments, and reopening a spec asks Copilot to rework its pull request. This needs a
+Copilot plan with the coding agent enabled for the repository. Turning the flow on says so if
+it isn't.
 
 ### Cost
 

@@ -48,6 +48,7 @@ switch (meta.kind) {
     result("done", `Wrote the ${meta.step} as #${createSub(meta.step, "Fake spec.")}.`);
     break;
   case "revise": {
+    if (meta.reopen) gh("issue", "reopen", String(meta.sub));
     const body = JSON.parse(gh("issue", "view", String(meta.sub), "--json", "body")).body;
     gh("issue", "edit", String(meta.sub), "--body", `${body}\n\nRevised at ${new Date().toISOString()}.`);
     gh("issue", "comment", String(meta.sub), "--body", `${MARK}\nRevised.`);
@@ -66,11 +67,14 @@ switch (meta.kind) {
     break;
   }
   case "revise-pr":
-    appendFileSync(`${meta.cwd}/fake-${meta.issue}.txt`, "revised\n");
+  case "rework": {
+    const what = meta.kind === "rework" ? "Rework to the revised spec" : "Address feedback";
+    appendFileSync(`${meta.cwd}/fake-${meta.issue}.txt`, `${what}\n`);
     git("add", "-A");
-    git("-c", "user.name=fake agent", "-c", "user.email=fake@example.test", "commit", "-q", "-m", "Address feedback");
+    git("-c", "user.name=fake agent", "-c", "user.email=fake@example.test", "commit", "-q", "-m", what);
     git("push", "-q");
-    gh("pr", "comment", String(meta.pr), "--body", `${MARK}\nUpdated.`);
+    gh("pr", "comment", String(meta.pr), "--body", `${MARK}\n${what}: done.`);
     result("done", `Updated #${meta.pr}.`);
     break;
+  }
 }

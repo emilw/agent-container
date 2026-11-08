@@ -11,7 +11,12 @@ const ENABLED = "2026-11-01T00:00:00Z";
 const issue = (o = {}) => ({ number: 7, title: "Add webhooks", state: "open", stateReason: null, labels: [], createdAt: "2026-11-05T10:00:00Z", authorCanWrite: true, ...o });
 const sub = (number, step, state = "open", stateReason = null) => ({ number, step, title: `${step}: Add webhooks`, state, stateReason });
 const comment = (o = {}) => ({ id: 100, on: "#16", author: "owner", createdAt: ago(30), body: "please change X", canWrite: true, byFlow: false, ...o });
-const facts = (o = {}) => ({ issue: issue(o.issue), subs: o.subs ?? [], pr: o.pr ?? null, comments: o.comments ?? [], now: NOW, quietMs: QUIET, enabledAt: ENABLED, busy: o.busy ?? false });
+const facts = (o = {}) => ({ issue: issue(o.issue), subs: o.subs ?? [], pr: o.pr ?? null, comments: o.comments ?? [], now: NOW, quietMs: QUIET, enabledAt: ENABLED, busy: o.busy ?? false, implementer: o.implementer ?? "agent" });
+// An issue with an open pull request, whose technical spec #16 the owner reopened or re-closed.
+const withPr = (tech = "open", reason = null, o = {}) => facts({
+  subs: [sub(15, "functional spec", "closed", "completed"), sub(16, "technical spec", tech, reason), sub(17, "implementation")],
+  pr: { number: 18, state: "open" }, ...o,
+});
 const tracked = (o = {}) => ({ number: 7, step: "triage", runs: 1, lastCommentId: 50, ...o });
 
 const cases = [
@@ -40,10 +45,27 @@ const cases = [
   ["finished issues stay finished", tracked({ finished: "Done" }), facts(), "none"],
   ["triaged but no sub-issue yet does nothing", tracked(), facts(), "none"],
   ["implementation sub-issue open, no pull request yet, does nothing", tracked(), facts({ subs: [sub(12, "fix plan", "closed", "completed"), sub(13, "implementation")] }), "none"],
+  // Going back a step
+  ["reopened technical spec goes back and waits for comments", tracked({ pr: 18 }), withPr(), "none back"],
+  ["comments on the reopened spec revise it, not the pull request", tracked({ pr: 18 }), withPr("open", null, { comments: [comment({ on: "#16" })] }), "run revise back"],
+  ["comments still coming on the reopened spec wait", tracked({ pr: 18 }), withPr("open", null, { comments: [comment({ on: "#16", createdAt: ago(2) })] }), "none recheck back"],
+  ["re-approved technical spec reworks the pull request", tracked({ pr: 18, back: { sub: 16, step: "technical spec" } }), withPr("closed", "completed"), "run rework"],
+  ["re-approved technical spec without a pull request implements", tracked({ back: { sub: 16, step: "technical spec" } }), facts({ subs: [sub(15, "functional spec", "closed", "completed"), sub(16, "technical spec", "closed", "completed"), sub(17, "implementation")] }), "run implement"],
+  ["rejected while back stops the flow", tracked({ pr: 18, back: { sub: 16, step: "technical spec" } }), withPr("closed", "not_planned"), "finish Stopped"],
+  ["re-approved functional spec revises the technical spec first", tracked({ pr: 18, back: { sub: 15, step: "functional spec" } }), withPr("closed", "completed"), "run revise reopen"],
+  ["reopened functional spec goes back", tracked({ pr: 18 }), facts({ subs: [sub(15, "functional spec"), sub(16, "technical spec", "closed", "completed")], pr: { number: 18, state: "open" } }), "none back"],
+  ["reopened and closed again between two checks reworks", tracked({ pr: 18, approvedAt: { 16: "2026-11-08T10:00:00Z" } }), withPr("closed", "completed", { subs: [sub(15, "functional spec", "closed", "completed"), { ...sub(16, "technical spec", "closed", "completed"), closedAt: "2026-11-08T11:30:00Z" }, sub(17, "implementation")] }), "run rework"],
+  ["an approval the watcher already recorded does nothing", tracked({ pr: 18, approvedAt: { 16: "2026-11-08T11:30:00Z" } }), withPr("closed", "completed", { subs: [sub(15, "functional spec", "closed", "completed"), { ...sub(16, "technical spec", "closed", "completed"), closedAt: "2026-11-08T11:30:00Z" }, sub(17, "implementation")] }), "none"],
+  // Copilot
+  ["comments mentioning @copilot never trigger the container's agent", tracked({ pr: 18 }), withPr("closed", "completed", { comments: [comment({ on: "pull request", body: "@copilot rename this", forCopilot: true })] }), "none"],
+  ["with Copilot implementing, pull request feedback is left to Copilot", tracked({ pr: 18 }), withPr("closed", "completed", { implementer: "copilot", comments: [comment({ on: "pull request" })] }), "none"],
+  ["with Copilot, an approved spec still hands over the implementation", tracked(), facts({ implementer: "copilot", subs: [sub(16, "technical spec", "closed", "completed")] }), "run implement"],
+  ["with Copilot assigned and no pull request yet, waits", tracked({ copilotAssignedAt: ago(10) }), facts({ implementer: "copilot", subs: [sub(16, "technical spec", "closed", "completed")] }), "none"],
 ];
 
 const describe = (d) =>
-  d.run ? `run ${d.run.kind}${d.run.kind === "write" ? ` ${d.run.step}` : ""}` : d.finish ? `finish ${d.finish.split(":")[0]}` : `none${d.recheck ? " recheck" : ""}`;
+  (d.run ? `run ${d.run.kind}${d.run.kind === "write" ? ` ${d.run.step}` : ""}${d.run.reopen ? " reopen" : ""}` : d.finish ? `finish ${d.finish.split(":")[0]}` : `none${d.recheck ? " recheck" : ""}`) +
+  (d.back ? " back" : "");
 
 let failed = 0;
 for (const [name, t, f, want] of cases) {
