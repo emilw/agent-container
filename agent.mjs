@@ -4,6 +4,7 @@
 // - runs `claude remote-control` in tmux, forwarding its y/n prompts and session link
 // - serves a tools API on localhost for programs in /workspace (Telegram notify, config values),
 //   and the same tools as an MCP server for Claude sessions
+// - watches workspace apps' GitHub issues and runs the issue flow on them (sdd.mjs)
 import { execFile, execFileSync, spawn } from "node:child_process";
 import {
   accessSync, appendFileSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync,
@@ -13,6 +14,7 @@ import { resolve as resolvePath } from "node:path";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { addr, sendMail } from "./smtp.mjs";
+import { createIssueFlow } from "./sdd.mjs";
 
 const execFileAsync = promisify(execFile);
 const CONFIG_DIR = "/config";
@@ -477,6 +479,10 @@ async function watchdog() {
   }
 }
 
+// How the issue flow runs one step when SDD_AGENT_COMMAND isn't set: the brief arrives on
+// stdin. This is the issue flow's only Claude-specific part.
+const SDD_DEFAULT_AGENT_COMMAND = "claude -p --permission-mode bypassPermissions";
+
 // ---------- tools API ----------
 // Localhost only, for everything running in the container. One registry, two front doors:
 // every feature is an entry in API below with a REST route (for programs in /workspace)
@@ -904,6 +910,18 @@ function toolsGetUsage({ operation }) {
 // - For a breaking change, add a new entry under /v2/... (id e.g. "email_v2") next to the
 //   old one, and mark the old one deprecated. GET /usage shows who still calls it; remove it
 //   only once nothing does, and only when the owner has confirmed it.
+
+const issueFlow = createIssueFlow({
+  log,
+  notify: async (title, text) => {
+    const [status, body] = await toolsNotify({ title, text });
+    if (status !== 200) log(`Issue flow notification not sent (${body.error}): ${text}`);
+  },
+  // Read on every check, so edits to the SDD_* keys apply without a restart.
+  settings: () => { try { return parseEnvFile(ENV_FILE); } catch { return {}; } },
+  defaultAgentCommand: SDD_DEFAULT_AGENT_COMMAND,
+});
+
 const API = [
   {
     id: "health",
@@ -1050,6 +1068,72 @@ const API = [
         .map((o) => `${o.operation} (${o.method} ${o.path}${o.deprecated ? ", deprecated" : ""}): ${o.calls} call(s)` +
           o.callers.map((c) => `\n  ${c.caller} via ${c.via}: ${c.count}, last ${c.last}`).join(""))
         .join("\n"),
+    },
+  },
+  {
+    id: "issue_flow_status",
+    method: "GET",
+    path: "/issue-flow",
+    summary: "The issue flow: watched apps, their open issues in the flow with step, status and last run, the run going now and queued, and runs today against the caps.",
+    response: {
+      apps: { type: "array", items: { type: "object" } },
+      runsToday: { type: "integer" },
+      maxRunsPerDay: { type: "integer" },
+      maxRunsPerIssue: { type: "integer" },
+      checkMinutes: { type: "integer" },
+      running: { type: "object", description: "The agent run going now, or null" },
+      queued: { type: "array", items: { type: "object" } },
+    },
+    run: () => issueFlow.status(),
+    mcp: {
+      description: "Show the issue flow: which workspace apps have it on, and where each of their open issues stands (step, status, last run). Use it when the owner asks what's going on with their issues.",
+      result: (body) => !body.apps.length ? "The issue flow isn't on for any app." : [
+        `Runs today: ${body.runsToday}/${body.maxRunsPerDay}. Checks every ${body.checkMinutes} min.`,
+        body.running ? `Running: ${body.running.app} #${body.running.issue} (${body.running.kind}) since ${body.running.since}` : "Nothing running.",
+        ...body.apps.map((a) => `\n${a.app} (${a.repo}, implemented by ${a.implementer ?? "agent"}), last check ${a.lastCheck ?? "not yet"}:` +
+          (a.issues.map((i) => `\n  #${i.issue} ${i.title}: ${i.step}, ${i.status} (${i.runs} run(s)) ${i.url}`).join("") || "\n  no open issues in the flow")),
+      ].join("\n"),
+    },
+  },
+  {
+    id: "enable_issue_flow",
+    method: "POST",
+    path: "/issue-flow/apps",
+    summary: "Turn the issue flow on for a workspace app: its GitHub issues are taken through the SDD playbook automatically. Reads the repo from the folder's origin remote and creates the labels sdd and \"sdd: blocked\".",
+    input: {
+      app: { type: "string", description: "Folder name in /workspace, e.g. price-watcher" },
+      implementer: { type: "string", enum: ["agent", "copilot"], description: "Who implements approved specs: the container's agent (default), or GitHub Copilot's coding agent, which needs a Copilot plan with it enabled. Specs are always written by the container's agent. Calling again changes it." },
+    },
+    required: ["app"],
+    response: { updated: { type: "boolean" }, app: { type: "object" } },
+    run: (input) => issueFlow.enable(input),
+    mcp: {
+      description: "Turn the issue flow on for a workspace app (\"turn on the issue flow for price-watcher\"). New issues by the owner in its GitHub repo then get triaged, specced and implemented step by step, with the owner approving each step on GitHub. The app needs a GitHub origin remote. Set implementer to copilot only when the owner asks for GitHub Copilot to do the implementation.",
+      result: (body) => `The issue flow is on for ${body.app.app} (${body.app.repo}), implemented by ${body.app.implementer === "copilot" ? "GitHub Copilot" : "the container's agent"}. New issues there are picked up at the next check; issues opened earlier start when they get the sdd label.`,
+    },
+  },
+  {
+    id: "disable_issue_flow",
+    method: "DELETE",
+    path: "/issue-flow/apps/{app}",
+    summary: "Turn the issue flow off for a workspace app. Its issues, comments and state are kept.",
+    input: { app: { type: "string", description: "Folder name in /workspace" } },
+    required: ["app"],
+    response: { removed: { type: "string" } },
+    run: (input) => issueFlow.disable(input),
+    mcp: { description: "Turn the issue flow off for a workspace app.", result: (body) => `The issue flow is off for ${body.removed}.` },
+  },
+  {
+    id: "check_issue_flow",
+    method: "POST",
+    path: "/issue-flow/check",
+    summary: "Check GitHub for the issue flow now instead of at the next interval, and return what it decided per issue. Runs that are due start in the background. 409 if a check is already going.",
+    input: { app: { type: "string", description: "Only this app. Default all." } },
+    response: { decisions: { type: "array", items: { type: "object" } } },
+    run: (input) => issueFlow.checkNow(input),
+    mcp: {
+      description: "Check the watched apps' GitHub issues now instead of waiting for the next interval, e.g. right after the owner approved a step or to test the flow.",
+      result: (body) => body.decisions.map((d) => `${d.app}${d.issue ? ` #${d.issue}` : ""}: ${d.decision}`).join("\n") || "Nothing changed.",
     },
   },
   {
@@ -1210,6 +1294,7 @@ const MCP_INSTRUCTIONS = `Tools provided by the container this session runs in, 
 - get_config / list_config: read values from the owner's central config (agent.env). Use these for URLs, account names and other settings instead of asking the owner or hardcoding values. If a needed key is missing, tell the owner the exact key name to add; never invent a value. Bot and GitHub tokens are never returned.
 - add_schedule / list_schedules / run_schedule / remove_schedule: run a command regularly, such as a project's daily script. Use these instead of crontab, systemd or a sleep loop. After adding a job, test it with run_schedule and check get_log. By default the owner gets a Telegram message only when a run fails.
 - list_logs / get_log: read the container's logs, 'agent' and one per scheduled job, to troubleshoot.
+- issue_flow_status / enable_issue_flow / disable_issue_flow / check_issue_flow: the issue flow, which takes a workspace app's GitHub issues through specs, approval and a pull request automatically (playbook: /opt/agent/sdd-flow.md). Turn it on when the owner asks; each app's runs log to sdd-<app>.
 Every tool is also a REST endpoint at $AGENT_TOOLS_URL, described by $AGENT_TOOLS_URL/openapi.json. Programs you write in /workspace can't use MCP, so they must call those endpoints instead.`;
 
 const mcpTools = () =>
@@ -1329,6 +1414,7 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => {
     stopping = true;
     saveUsage();
+    issueFlow.stop();
     try { supercronic?.kill("SIGTERM"); } catch {}
     try { tmux("kill-server"); } catch {}
     process.exit(0);
@@ -1338,6 +1424,7 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
 startToolsServer();
 clearStaleJobStates();
 startScheduler();
+issueFlow.start();
 await registerMcpServer();
 if (telegram) pollTelegram();
 else log("Telegram is not configured (TELEGRAM_TOKEN / ALLOWED_USER_IDS in agent.env); messages go to the container log only.");

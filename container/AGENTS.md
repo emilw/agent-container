@@ -94,3 +94,13 @@ When something should run regularly (a daily script, a check every 15 minutes), 
 A run is skipped if the previous one is still going. Each job's output goes to its own log: `get_log name=<job>`.
 
 After adding a job: test it with `run_schedule`, read the result with `get_log`, and write the schedule into the project's `AGENTS.md`. When a job fails, start with `get_log` for that job, and `get_log name=agent` for the container's own log.
+## Issue flow
+The container can take a workspace app's GitHub issues through specs, approval and a pull request automatically, following the playbook in `/opt/agent/sdd-flow.md`. When the owner asks for it ("turn on the issue flow for price-watcher"), use `enable_issue_flow` with the app's folder name; the app needs a GitHub `origin` remote. `issue_flow_status` shows where every issue stands, `check_issue_flow` checks now instead of at the next interval, and `disable_issue_flow` turns it off.
+
+- The container checks GitHub every `SDD_CHECK_MINUTES` (default 15) without using an agent, and starts one agent run per step that's due. Each run's output is in the log `sdd-<app>`.
+- New issues from the owner start automatically; older issues, or issues from people without write access, start when the owner adds the `sdd` label.
+- The owner gives feedback by commenting, approves a step by closing its sub-issue as completed, and merges the pull request. `sdd: blocked` and the status comment on the issue say when something needs the owner.
+- The owner can go back a step by reopening an earlier spec; the pull request is then reworked, not replaced.
+- `implementer: "copilot"` has GitHub Copilot do the implementation instead of the container's agent. Only set it when the owner asks for Copilot; it needs a Copilot plan with the coding agent. Comments mentioning `@copilot` are always Copilot's, never yours to act on.
+- When the owner asks you by hand to work on or continue an issue, follow the same playbook.
+- Mention it in the app's `AGENTS.md` when it's on, and add anything a run needs to know there (how to build and test the app).
