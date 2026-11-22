@@ -334,13 +334,16 @@ flowchart TD
 | Approve a step | Close its sub-issue as **completed** |
 | Reject a step | Close its sub-issue as **not planned**, which stops the flow |
 | Go back a step | Reopen an earlier spec and comment. Closing it again reworks the same pull request to match. |
-| Unblock | Fix or answer what the status comment says, then remove the `sdd: blocked` label |
+| Answer a question | Reply on the issue or the sub-issue. The step reruns with your answer once you've been quiet for a check interval. Closing the spec it asks about answers it too. |
+| Unblock | A failed run (`sdd: blocked`): comment to retry it, or remove the label. A run limit: remove the label. |
 | Finish | Merge the pull request. The agent never merges. |
 | Skip the wait | "Continue on issue #N" in an agent session, or `check_issue_flow` |
 
 A **status comment** at the top of each issue always shows the current step, with a line
 like "Writing the technical spec, started 14:05" while an agent works on it. You get a
-Telegram message when a step is ready for review or something is blocked. When you merge,
+Telegram message when a step is ready for review, the agent has a question, or something is
+blocked. The status comment and the message say what to do next. `sdd: question` means it's
+waiting for your answer; `sdd: blocked` means a run failed or a run limit was reached. When you merge,
 the issue and its sub-issues are closed as completed, and the status comment says "Done".
 
 Only comments and labels from people with write access to the repository count, so on a public

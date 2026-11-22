@@ -1132,7 +1132,7 @@ const API = [
         `Runs today: ${body.runsToday}/${body.maxRunsPerDay}. Checks every ${body.checkMinutes} min.`,
         body.running ? `Running: ${body.running.app} #${body.running.issue} (${body.running.kind}) since ${body.running.since}` : "Nothing running.",
         ...body.apps.map((a) => `\n${a.app} (${a.repo}, implemented by ${a.implementer ?? "agent"}), last check ${a.lastCheck ?? "not yet"}:` +
-          (a.issues.map((i) => `\n  #${i.issue} ${i.title}: ${i.step}, ${i.status} (${i.runs} run(s)) ${i.url}`).join("") || "\n  no open issues in the flow")),
+          (a.issues.map((i) => `\n  #${i.issue} ${i.title}: ${i.step}, ${i.status} (${i.runs} run(s)) ${i.url}${i.blocked?.howToContinue ? `\n    ${i.blocked.howToContinue}` : ""}`).join("") || "\n  no open issues in the flow")),
       ].join("\n"),
     },
   },
@@ -1170,11 +1170,17 @@ const API = [
     path: "/issue-flow/check",
     summary: "Check GitHub for the issue flow now instead of at the next interval, and return what it decided per issue. Runs that are due start in the background. 409 if a check is already going.",
     input: { app: { type: "string", description: "Only this app. Default all." } },
-    response: { decisions: { type: "array", items: { type: "object" } } },
+    response: {
+      decisions: { type: "array", items: { type: "object" } },
+      waiting: { type: "array", items: { type: "object" }, description: "Issues waiting for the owner's answer or blocked, with how to continue, whether or not anything changed" },
+    },
     run: (input) => issueFlow.checkNow(input),
     mcp: {
       description: "Check the watched apps' GitHub issues now instead of waiting for the next interval, e.g. right after the owner approved a step or to test the flow.",
-      result: (body) => body.decisions.map((d) => `${d.app}${d.issue ? ` #${d.issue}` : ""}: ${d.decision}`).join("\n") || "Nothing changed.",
+      result: (body) => [
+        body.decisions.map((d) => `${d.app}${d.issue ? ` #${d.issue}` : ""}: ${d.decision}`).join("\n") || "Nothing changed.",
+        ...(body.waiting ?? []).map((w) => `Still ${w.kind === "question" ? "waiting for your answer" : "blocked"}: ${w.app} #${w.issue}: ${w.reason}. ${w.howToContinue} ${w.url}`),
+      ].join("\n"),
     },
   },
   {
