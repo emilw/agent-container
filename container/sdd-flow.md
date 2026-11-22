@@ -25,11 +25,14 @@ the repository's own `AGENTS.md` too, for how to build and test it.
 | A sub-issue closed as not planned | The owner rejected it; the flow stops |
 | The status comment at the top of the issue | What's happening now |
 | A pull request under Development | The implementation, waiting for the owner to merge |
-| The `sdd: blocked` label | Something needs the owner; the status comment says what |
+| The `sdd: question` label | The agent asked something; the owner answers by replying on the issue or the sub-issue |
+| The `sdd: blocked` label | A run failed or a run limit was reached; the status comment says what and how to continue |
 
 The owner gives feedback by commenting, approves by closing a sub-issue as completed, rejects
 by closing it as not planned, goes back a step by reopening an earlier sub-issue, and merges
-the pull request. **Only the owner does those.** Never close, approve or reject a sub-issue
+the pull request. A question is answered by replying (or by closing the spec it's about),
+a failed run is retried by commenting or removing `sdd: blocked`, and a run limit is lifted by
+removing `sdd: blocked`; the container removes the labels itself when it continues. **Only the owner does those.** Never close, approve or reject a sub-issue
 yourself, never merge, and never start the next step before the current one is approved.
 
 ## 1. Start: read and resume
@@ -162,9 +165,13 @@ the owner it's ready, with a link.
   account at once: update the sub-issue body, and reply with what changed. Then stop again.
 - **Approved:** the owner closed the sub-issue as completed. Continue with the next step.
 - **Rejected:** the owner closed it as not planned. The flow stops there.
-- **A question you can't answer from the code or the comments:** ask it in a comment on the
-  reported issue and stop. In an automatic run, write the outcome `question` with the
-  question in the summary.
+- **Decisions for the owner** while writing or revising a spec or fix plan go under its
+  "Open questions" section; finish the step normally (outcome `done`).
+- **A question you can't continue without** (feedback that contradicts itself, an
+  implementation detail the approved spec doesn't cover), and can't answer from the code or
+  the comments: ask it in a comment on the sub-issue you're working on (or the reported
+  issue), say the owner can answer by replying there, and stop. In an automatic run, write the
+  outcome `question` with the question in the summary.
 
 ## 5. Implement
 
@@ -234,7 +241,7 @@ The brief names a file. Write it last, as JSON:
 | `outcome` | When |
 | --- | --- |
 | `done` | The step is on GitHub (sub-issue written or revised, pull request opened or updated) |
-| `question` | You need the owner to decide something; you asked it in a comment |
+| `question` | You can't do the step without the owner's answer; you asked it in a comment. (Decisions in a spec go under its Open questions, with `done`.) |
 | `stopped` | Triage only: the issue shouldn't be done; you commented why |
 | `failed` | You couldn't do the step; say why in the summary |
 

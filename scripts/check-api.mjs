@@ -22,9 +22,12 @@ const response = (op) => op.responses?.["200"]?.content?.["application/json"]?.s
 
 const problems = [];
 
+// A type is a string or a list such as ["string", "null"]; compare lists by their contents.
+const sameType = (a, b) => JSON.stringify([a].flat().sort()) === JSON.stringify([b].flat().sort());
+
 function compareSchema(where, before, after) {
-  if (before.type !== after.type) problems.push(`${where}: type changed from ${before.type} to ${after.type}`);
-  if (before.items?.type !== after.items?.type) problems.push(`${where}: item type changed from ${before.items?.type} to ${after.items?.type}`);
+  if (!sameType(before.type, after.type)) problems.push(`${where}: type changed from ${before.type} to ${after.type}`);
+  if (!sameType(before.items?.type, after.items?.type)) problems.push(`${where}: item type changed from ${before.items?.type} to ${after.items?.type}`);
   const lost = (before.enum ?? []).filter((v) => !after.enum?.includes(v));
   if (before.enum && lost.length) problems.push(`${where}: no longer accepts ${lost.join(", ")}`);
   if (!before.enum && after.enum) problems.push(`${where}: now only accepts ${after.enum.join(", ")}`);
